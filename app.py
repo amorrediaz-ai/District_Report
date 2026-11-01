@@ -4,25 +4,28 @@
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import secrets
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
 
+import click
+import psycopg
+from psycopg.errors import UniqueViolation
 from flask import (
     Flask, abort, flash, g, jsonify, redirect, render_template, request,
-    send_from_directory, session, url_for,
+    send_file, session, url_for,
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 
-BASE_DIR = Path(__file__).resolve().parent
-DATABASE = Path(os.environ.get("DATABASE", BASE_DIR / "main.db"))
+from database import connect_db, initialize_schema
+
 PER_PAGE = 8
-UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", BASE_DIR / "uploads"))
 MAX_PHOTO_MB = 5
 LOCAL_UTC_OFFSET = int(os.environ.get("LOCAL_UTC_OFFSET", "5"))  # Казахстан, UTC+5
 
@@ -57,22 +60,28 @@ STATUS_SQL = f"COALESCE(NULLIF(r.Status, ''), '{DEFAULT_STATUS}')"
 TYPE_SQL = f"COALESCE(NULLIF(r.type, ''), '{DEFAULT_CATEGORY}')"
 
 SELECT_REPORT = f"""
-    SELECT r.ID, r.Title, r.Location, r.Description, r.User_id,
+    SELECT r.id AS "ID", r.title AS "Title", r.location AS "Location",
+           r.description AS "Description", r.user_id AS "User_id",
            COALESCE(r.counter_likes, 0) AS counter_likes,
-           {STATUS_SQL} AS Status,
+           {STATUS_SQL} AS "Status",
            {TYPE_SQL} AS type,
-           r.Created_at, r.Photo,
-           u.Name AS Author
+           r.created_at AS "Created_at", r.photo AS "Photo",
+           u.name AS "Author"
     FROM Report r
     LEFT JOIN Users u ON u.ID = r.User_id
 """
 
+SECRET_KEY = os.environ.get("SECRET_KEY", "")
+if len(SECRET_KEY) < 32 or SECRET_KEY == "dev-secret-change-me":
+    raise RuntimeError("Укажите постоянный SECRET_KEY длиной не менее 32 символов.")
+
 app = Flask(__name__, template_folder="pages")
 app.config.update(
-    SECRET_KEY=os.environ.get("SECRET_KEY", "dev-secret-change-me"),
+    SECRET_KEY=SECRET_KEY,
     MAX_CONTENT_LENGTH=(MAX_PHOTO_MB + 1) * 1024 * 1024,  # запас на остальные поля формы
     PERMANENT_SESSION_LIFETIME=timedelta(days=365),
     SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=os.environ.get("RENDER", "").lower() == "true",
     SESSION_COOKIE_SAMESITE="Lax",
 )
 
@@ -80,20 +89,9 @@ app.config.update(
 # --------------------------------------------------------------------------
 # База данных
 # --------------------------------------------------------------------------
-def _connect() -> sqlite3.Connection:
-    if not DATABASE.is_file():
-        raise FileNotFoundError(f"База не найдена: {DATABASE}")
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    # LIKE в SQLite не понимает регистр кириллицы — добавляем свою функцию
-    conn.create_function("PYLOWER", 1, lambda s: s.lower() if isinstance(s, str) else s)
-    return conn
-
-
-def get_db() -> sqlite3.Connection:
+def get_db() -> psycopg.Connection:
     if "db" not in g:
-        g.db = _connect()
+        g.db = connect_db()
     return g.db
 
 
@@ -104,97 +102,41 @@ def close_db(_exc):
         db.close()
 
 
-NEW_REPORT_TABLE = """
-CREATE TABLE "Report" (
-    "ID"            INTEGER,
-    "Title"         TEXT,
-    "Location"      TEXT,
-    "Description"   TEXT,
-    "User_id"       INTEGER REFERENCES "Users"("ID") ON DELETE SET NULL,
-    "counter_likes" INTEGER NOT NULL DEFAULT 0,
-    "Status"        TEXT DEFAULT 'На рассмотрении',
-    "type"          TEXT,
-    "Created_at"    TEXT DEFAULT CURRENT_TIMESTAMP,
-    "Photo"         TEXT,
-    PRIMARY KEY("ID" AUTOINCREMENT)
-);
-"""
-
-
 def init_db() -> None:
-    """Создаёт недостающие таблицы и мягко мигрирует старую таблицу Report.
-
-    Что меняется в Report: убираем UNIQUE у User_id (иначе один житель мог бы
-    оставить только одно обращение), чиним опечатку в статусе по умолчанию.
-    Все существующие данные сохраняются.
-    """
-    conn = _connect()
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS "Users" (
-                "ID"            INTEGER PRIMARY KEY AUTOINCREMENT,
-                "Name"          TEXT NOT NULL,
-                "Email"         TEXT NOT NULL UNIQUE,
-                "Password_hash" TEXT NOT NULL,
-                "Is_admin"      INTEGER NOT NULL DEFAULT 0,
-                "Created_at"    TEXT DEFAULT CURRENT_TIMESTAMP
-            );
-            """
-        )
-        row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='Report'"
-        ).fetchone()
-        if row is None:
-            conn.executescript(NEW_REPORT_TABLE)
-        elif "UNIQUE" in row["sql"].upper() or "расмотрении" in row["sql"]:
-            conn.executescript(
-                "PRAGMA foreign_keys = OFF; BEGIN;"
-                'ALTER TABLE "Report" RENAME TO "Report_old";'
-                + NEW_REPORT_TABLE
-                + """
-                INSERT INTO "Report"
-                    (ID, Title, Location, Description, User_id, counter_likes,
-                     Status, type, Created_at)
-                SELECT ID, Title, Location, Description, User_id,
-                       COALESCE(counter_likes, 0),
-                       CASE WHEN Status IS NULL OR Status = ''
-                                 OR Status = 'На расмотрении'
-                            THEN 'На рассмотрении' ELSE Status END,
-                       type,
-                       COALESCE(Created_at, CURRENT_TIMESTAMP)
-                FROM "Report_old";
-                DROP TABLE "Report_old";
-                COMMIT; PRAGMA foreign_keys = ON;
-                """
-            )
-        # Фото: добавляем колонку в уже существующую таблицу
-        cols = {r["name"] for r in conn.execute('PRAGMA table_info("Report")')}
-        if "Photo" not in cols:
-            conn.execute('ALTER TABLE "Report" ADD COLUMN "Photo" TEXT')
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS "Report_like" (
-                "Report_id" INTEGER NOT NULL REFERENCES "Report"("ID") ON DELETE CASCADE,
-                "Voter"     TEXT NOT NULL,
-                PRIMARY KEY("Report_id", "Voter")
-            );
-            CREATE INDEX IF NOT EXISTS idx_report_created ON "Report"("Created_at");
-            """
-        )
-        # Администратор по умолчанию (для прототипа; смените пароль через переменные окружения)
-        if not conn.execute('SELECT 1 FROM "Users" WHERE Is_admin = 1').fetchone():
+    """Create PostgreSQL tables without deleting existing data."""
+    with connect_db() as conn, conn.transaction():
+        initialize_schema(conn)
+        if not conn.execute("SELECT 1 FROM users WHERE is_admin").fetchone():
+            email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+            password = os.environ.get("ADMIN_PASSWORD", "")
+            if "@" not in email or len(password) < 12:
+                raise RuntimeError(
+                    "Для первого запуска задайте ADMIN_EMAIL и ADMIN_PASSWORD "
+                    "(пароль не менее 12 символов)."
+                )
             conn.execute(
-                'INSERT INTO "Users" (Name, Email, Password_hash, Is_admin) VALUES (?,?,?,1)',
-                (
-                    "Администратор",
-                    os.environ.get("ADMIN_EMAIL", "admin@districtreport.local"),
-                    generate_password_hash(os.environ.get("ADMIN_PASSWORD", "admin123")),
-                ),
+                """INSERT INTO users (name, email, password_hash, is_admin)
+                   VALUES (%s, %s, %s, TRUE)""",
+                ("Администратор", email, generate_password_hash(password)),
             )
-        conn.commit()
-    finally:
-        conn.close()
+
+
+@app.cli.command("set-admin-password")
+@click.argument("email")
+@click.password_option(confirmation_prompt=True)
+def set_admin_password(email, password):
+    """Change an existing administrator's password, for example after import."""
+    if len(password) < 12:
+        raise click.ClickException("Пароль должен содержать не менее 12 символов.")
+    with connect_db() as conn:
+        row = conn.execute(
+            """UPDATE users SET password_hash = %s
+               WHERE lower(email) = %s AND is_admin RETURNING id""",
+            (generate_password_hash(password), email.strip().lower()),
+        ).fetchone()
+    if row is None:
+        raise click.ClickException("Администратор с этим email не найден.")
+    click.echo("Пароль администратора изменён.")
 
 
 # --------------------------------------------------------------------------
@@ -207,7 +149,8 @@ def load_user_and_check_csrf():
     uid = session.get("user_id")
     if uid:
         g.user = get_db().execute(
-            'SELECT ID, Name, Email, Is_admin FROM "Users" WHERE ID = ?', (uid,)
+            'SELECT id AS "ID", name AS "Name", email AS "Email", '
+            'is_admin AS "Is_admin" FROM users WHERE id = %s', (uid,)
         ).fetchone()
         if g.user is None:
             session.pop("user_id", None)
@@ -265,8 +208,12 @@ def detect_image_ext(head: bytes) -> str | None:
     return None
 
 
-def save_photo(file) -> tuple[str | None, str | None]:
-    """Сохраняет загруженное фото. Возвращает (имя_файла, ошибка)."""
+IMAGE_MIMES = {".jpg": "image/jpeg", ".png": "image/png",
+               ".gif": "image/gif", ".webp": "image/webp"}
+
+
+def read_photo(file) -> tuple[dict | None, str | None]:
+    """Validate the upload; the caller saves bytes with the report transaction."""
     if file is None or not file.filename:
         return None, None
     data = file.read(MAX_PHOTO_MB * 1024 * 1024 + 1)
@@ -275,18 +222,8 @@ def save_photo(file) -> tuple[str | None, str | None]:
     ext = detect_image_ext(data[:16])
     if ext is None:
         return None, "Допустимы только изображения JPG, PNG, WebP или GIF."
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    name = secrets.token_hex(16) + ext
-    (UPLOAD_DIR / name).write_bytes(data)
-    return name, None
-
-
-def delete_photo_file(name: str | None) -> None:
-    if name and Path(name).name == name:  # без путей
-        try:
-            (UPLOAD_DIR / name).unlink()
-        except FileNotFoundError:
-            pass
+    return {"name": secrets.token_hex(16) + ext,
+            "data": data, "mime": IMAGE_MIMES[ext]}, None
 
 
 def safe_next(target: str | None) -> str:
@@ -298,13 +235,15 @@ def safe_next(target: str | None) -> str:
 
 
 @app.template_filter("localdt")
-def localdt(value: str | None) -> str:
+def localdt(value: datetime | str | None) -> str:
     if not value:
         return ""
     try:
-        dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return value
+        dt = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return str(value)
     local = dt.astimezone(timezone(timedelta(hours=LOCAL_UTC_OFFSET)))
     return local.strftime("%d.%m.%Y, %H:%M")
 
@@ -334,27 +273,27 @@ def fetch_reports(q: str, category: str, status: str, sort: str, page: int):
     if q:
         needle = "%" + q.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         where.append(
-            "(PYLOWER(r.Title) LIKE ? ESCAPE '\\' OR PYLOWER(r.Location) LIKE ? ESCAPE '\\' "
-            "OR PYLOWER(r.Description) LIKE ? ESCAPE '\\')"
+            "(r.Title ILIKE %s ESCAPE '\\' OR r.Location ILIKE %s ESCAPE '\\' "
+            "OR r.Description ILIKE %s ESCAPE '\\')"
         )
         params += [needle] * 3
     if category:
-        where.append(f"{TYPE_SQL} = ?")
+        where.append(f"{TYPE_SQL} = %s")
         params.append(category)
     if status:
-        where.append(f"{STATUS_SQL} = ?")
+        where.append(f"{STATUS_SQL} = %s")
         params.append(status)
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     db = get_db()
 
-    total = db.execute(f"SELECT COUNT(*) FROM Report r {where_sql}", params).fetchone()[0]
+    total = db.execute(f"SELECT COUNT(*) AS total FROM Report r {where_sql}", params).fetchone()["total"]
     pages = max(1, math.ceil(total / PER_PAGE))
     page = min(max(page, 1), pages)
 
     order = SORTS.get(sort, SORTS["new"])[1]
     rows = db.execute(
-        f"{SELECT_REPORT} {where_sql} ORDER BY {order} LIMIT ? OFFSET ?",
+        f"{SELECT_REPORT} {where_sql} ORDER BY {order} LIMIT %s OFFSET %s",
         params + [PER_PAGE, (page - 1) * PER_PAGE],
     ).fetchall()
     reports = [dict(r) for r in rows]
@@ -362,10 +301,10 @@ def fetch_reports(q: str, category: str, status: str, sort: str, page: int):
     liked_ids = set()
     if reports:
         ids = [r["ID"] for r in reports]
-        marks = ",".join("?" * len(ids))
+        marks = ",".join(["%s"] * len(ids))
         liked_ids = {
-            r[0] for r in db.execute(
-                f"SELECT Report_id FROM Report_like WHERE Voter = ? AND Report_id IN ({marks})",
+            r["report_id"] for r in db.execute(
+                f"SELECT Report_id FROM Report_like WHERE Voter = %s AND Report_id IN ({marks})",
                 [current_voter(), *ids],
             )
         }
@@ -378,22 +317,22 @@ def fetch_reports(q: str, category: str, status: str, sort: str, page: int):
 def fetch_stats() -> dict:
     row = get_db().execute(
         f"""SELECT COUNT(*) AS total,
-                   COALESCE(SUM({STATUS_SQL} = 'Решено'), 0) AS resolved,
-                   COALESCE(SUM({STATUS_SQL} = 'В работе'), 0) AS in_progress,
-                   COALESCE(SUM({STATUS_SQL} = '{DEFAULT_STATUS}'), 0) AS pending
+                   COUNT(*) FILTER (WHERE {STATUS_SQL} = 'Решено') AS resolved,
+                   COUNT(*) FILTER (WHERE {STATUS_SQL} = 'В работе') AS in_progress,
+                   COUNT(*) FILTER (WHERE {STATUS_SQL} = '{DEFAULT_STATUS}') AS pending
             FROM Report r"""
     ).fetchone()
     return dict(row)
 
 
 def get_report_or_404(report_id: int) -> dict:
-    row = get_db().execute(f"{SELECT_REPORT} WHERE r.ID = ?", (report_id,)).fetchone()
+    row = get_db().execute(f"{SELECT_REPORT} WHERE r.ID = %s", (report_id,)).fetchone()
     if row is None:
         abort(404)
     r = dict(row)
     r["status_class"] = STATUSES.get(r["Status"], "pending")
     r["liked"] = bool(get_db().execute(
-        "SELECT 1 FROM Report_like WHERE Report_id = ? AND Voter = ?",
+        "SELECT 1 FROM Report_like WHERE Report_id = %s AND Voter = %s",
         (report_id, current_voter()),
     ).fetchone())
     return r
@@ -442,29 +381,29 @@ def new_report():
         if not 10 <= len(form["description"]) <= 2000:
             errors["description"] = "Описание: от 10 до 2000 символов."
 
-        photo_name = None
+        photo = None
         if not errors:
-            photo_name, photo_error = save_photo(request.files.get("photo"))
+            photo, photo_error = read_photo(request.files.get("photo"))
             if photo_error:
                 errors["photo"] = photo_error
 
         if not errors:
             db = get_db()
-            try:
-                cur = db.execute(
-                    """INSERT INTO Report (Title, Location, Description, User_id, counter_likes,
-                                           Status, type, Photo)
-                       VALUES (?, ?, ?, ?, 0, ?, ?, ?)""",
+            with db.transaction():
+                row = db.execute(
+                    """INSERT INTO report
+                       (title, location, description, user_id, status, type,
+                        photo, photo_data, photo_mime)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       RETURNING id""",
                     (form["title"], form["location"], form["description"],
                      g.user["ID"] if g.user else None, DEFAULT_STATUS, form["category"],
-                     photo_name),
-                )
-                db.commit()
-            except Exception:
-                delete_photo_file(photo_name)
-                raise
+                     photo["name"] if photo else None,
+                     photo["data"] if photo else None,
+                     photo["mime"] if photo else None),
+                ).fetchone()
             flash("Спасибо! Обращение отправлено и появилось в списке.", "success")
-            return redirect(url_for("report_detail", report_id=cur.lastrowid))
+            return redirect(url_for("report_detail", report_id=row["id"]))
 
     return render_template("report_form.html", form=form, errors=errors)
 
@@ -477,26 +416,28 @@ def report_detail(report_id: int):
 @app.post("/report/<int:report_id>/like")
 def like_report(report_id: int):
     db = get_db()
-    if not db.execute("SELECT 1 FROM Report WHERE ID = ?", (report_id,)).fetchone():
-        abort(404)
     voter = current_voter()
-    removed = db.execute(
-        "DELETE FROM Report_like WHERE Report_id = ? AND Voter = ?", (report_id, voter)
-    ).rowcount
-    if removed:
-        db.execute(
-            "UPDATE Report SET counter_likes = MAX(COALESCE(counter_likes, 0) - 1, 0) WHERE ID = ?",
-            (report_id,),
-        )
-    else:
-        db.execute("INSERT INTO Report_like (Report_id, Voter) VALUES (?, ?)", (report_id, voter))
-        db.execute(
-            "UPDATE Report SET counter_likes = COALESCE(counter_likes, 0) + 1 WHERE ID = ?",
-            (report_id,),
-        )
-    db.commit()
-    likes = db.execute("SELECT counter_likes FROM Report WHERE ID = ?", (report_id,)).fetchone()[0]
-    return jsonify(liked=not removed, likes=likes)
+    with db.transaction():
+        # Serialize toggles on this report so simultaneous clicks cannot lose votes.
+        if not db.execute(
+            "SELECT id FROM report WHERE id = %s FOR UPDATE", (report_id,)
+        ).fetchone():
+            abort(404)
+        removed = db.execute(
+            "DELETE FROM report_like WHERE report_id = %s AND voter = %s",
+            (report_id, voter),
+        ).rowcount
+        if not removed:
+            db.execute(
+                "INSERT INTO report_like (report_id, voter) VALUES (%s, %s)",
+                (report_id, voter),
+            )
+        row = db.execute(
+            """UPDATE report SET counter_likes = GREATEST(counter_likes + %s, 0)
+               WHERE id = %s RETURNING counter_likes""",
+            (-1 if removed else 1, report_id),
+        ).fetchone()
+    return jsonify(liked=not removed, likes=row["counter_likes"])
 
 
 @app.post("/report/<int:report_id>/status")
@@ -506,8 +447,11 @@ def change_status(report_id: int):
     if status not in STATUSES:
         abort(400, "Неизвестный статус.")
     db = get_db()
-    db.execute("UPDATE Report SET Status = ? WHERE ID = ?", (status, report_id))
-    db.commit()
+    row = db.execute(
+        "UPDATE report SET status = %s WHERE id = %s RETURNING id", (status, report_id)
+    ).fetchone()
+    if row is None:
+        abort(404)
     flash(f"Статус изменён: {status}.", "success")
     return redirect(url_for("report_detail", report_id=report_id))
 
@@ -516,18 +460,31 @@ def change_status(report_id: int):
 @admin_required
 def delete_report(report_id: int):
     db = get_db()
-    row = db.execute("SELECT Photo FROM Report WHERE ID = ?", (report_id,)).fetchone()
-    db.execute("DELETE FROM Report WHERE ID = ?", (report_id,))
-    db.commit()
-    if row:
-        delete_photo_file(row["Photo"])
+    row = db.execute(
+        "DELETE FROM report WHERE id = %s RETURNING id", (report_id,)
+    ).fetchone()
+    if row is None:
+        abort(404)
+    # The photo is in the same row, and report_like has ON DELETE CASCADE.
     flash("Обращение удалено.", "info")
     return redirect(url_for("home"))
 
 
 @app.route("/uploads/<path:filename>")
 def uploaded_file(filename: str):
-    response = send_from_directory(UPLOAD_DIR, filename, max_age=60 * 60 * 24 * 30)
+    if Path(filename).name != filename:
+        abort(404)
+    photo = get_db().execute(
+        "SELECT photo_data, photo_mime FROM report WHERE photo = %s", (filename,)
+    ).fetchone()
+    if photo is None:
+        abort(404)
+    data = bytes(photo["photo_data"])
+    response = send_file(
+        BytesIO(data), mimetype=photo["photo_mime"], download_name=filename,
+        max_age=60 * 60 * 24 * 30, conditional=True,
+        etag=hashlib.sha256(data).hexdigest(),
+    )
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
@@ -559,19 +516,23 @@ def register():
             errors["password"] = "Пароли не совпадают."
         db = get_db()
         if not errors and db.execute(
-            'SELECT 1 FROM "Users" WHERE Email = ?', (form["email"],)
+            'SELECT 1 FROM users WHERE Email = %s', (form["email"],)
         ).fetchone():
             errors["email"] = "Этот email уже зарегистрирован."
         if not errors:
-            cur = db.execute(
-                'INSERT INTO "Users" (Name, Email, Password_hash) VALUES (?,?,?)',
-                (form["name"], form["email"], generate_password_hash(password)),
-            )
-            db.commit()
-            session.clear()
-            session["user_id"] = cur.lastrowid
-            flash(f"Добро пожаловать, {form['name']}!", "success")
-            return redirect(url_for("home"))
+            try:
+                row = db.execute(
+                    """INSERT INTO users (name, email, password_hash)
+                       VALUES (%s, %s, %s) RETURNING id""",
+                    (form["name"], form["email"], generate_password_hash(password)),
+                ).fetchone()
+            except UniqueViolation:
+                errors["email"] = "Этот email уже зарегистрирован."
+            else:
+                session.clear()
+                session["user_id"] = row["id"]
+                flash(f"Добро пожаловать, {form['name']}!", "success")
+                return redirect(url_for("home"))
     return render_template("register.html", form=form, errors=errors)
 
 
@@ -583,7 +544,8 @@ def login():
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
         user = get_db().execute(
-            'SELECT * FROM "Users" WHERE Email = ?', (email,)
+            'SELECT id AS "ID", name AS "Name", password_hash AS "Password_hash" '
+            'FROM users WHERE lower(email) = %s', (email,)
         ).fetchone()
         if user and check_password_hash(user["Password_hash"], request.form.get("password", "")):
             session.clear()
@@ -605,7 +567,7 @@ def logout():
 @login_required
 def my_reports():
     rows = get_db().execute(
-        f"{SELECT_REPORT} WHERE r.User_id = ? ORDER BY r.Created_at DESC, r.ID DESC",
+        f"{SELECT_REPORT} WHERE r.User_id = %s ORDER BY r.Created_at DESC, r.ID DESC",
         (g.user["ID"],),
     ).fetchall()
     reports = []
@@ -639,4 +601,5 @@ def http_error(err):
 init_db()
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")), debug=False)
+
