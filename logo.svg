@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-labelledby="title">
+<title id="title">District Report logo</title>
+<rect width="64" height="64" rx="15" fill="#2D4937"/>
+<path d="M32 10.5c-11.6 0-20 8.4-20 19.5C12 43.5 32 56 32 56s20-12.5 20-26C52 18.9 43.6 10.5 32 10.5Z" stroke="#F7F3E9" stroke-width="3.5" stroke-linejoin="round"/>
+<path d="M21 35V27h7v8m0-13h8v13m0-7h7v7" stroke="#F7F3E9" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M20 35h24" stroke="#F7F3E9" stroke-width="3" stroke-linecap="round"/>
+</svg>
