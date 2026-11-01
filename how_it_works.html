@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Как это работает — District Report{% endblock %}
+{% block content %}
+<section class="main_preview narrow">
+    <div class="Report_header">
+        <h1>Как это работает</h1>
+        <p>Четыре шага от проблемы во дворе до решения.</p>
+    </div>
+
+    <ol class="steps">
+        <li><b>1</b><div><h3>Сообщите</h3><p>Заполните короткую форму: что случилось, где и в какой категории. Регистрация не обязательна.</p></div></li>
+        <li><b>2</b><div><h3>Поддержите</h3><p>Жители ставят ❤ под обращениями, которые касаются и их. Чем больше поддержки, тем заметнее проблема.</p></div></li>
+        <li><b>3</b><div><h3>Рассмотрение</h3><p>Администратор переводит обращение в статус «В работе» или «Отклонено» с учётом приоритета.</p></div></li>
+        <li><b>4</b><div><h3>Результат</h3><p>Когда проблема устранена, обращение получает статус «Решено» — это видно всем в общем списке.</p></div></li>
+    </ol>
+
+    <div class="status_legend">
+        <h2>Статусы</h2>
+        {% for s, cls in STATUSES.items() %}<span class="report_status {{ cls }}">{{ s }}</span>{% endfor %}
+    </div>
+
+    <a href="{{ url_for('new_report') }}" class="report-btn cta">Сообщить о проблеме</a>
+</section>
+{% endblock %}

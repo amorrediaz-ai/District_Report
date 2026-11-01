@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Вход — District Report{% endblock %}
+{% block content %}
+<section class="main_preview auth">
+    <div class="auth_card">
+        <h1>Вход</h1>
+        {% if error %}<div class="flash flash_error">{{ error }}</div>{% endif %}
+        <form method="post" class="card_form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label class="field"><span>Email</span>
+                <input type="email" name="email" value="{{ email }}" required autofocus></label>
+            <label class="field"><span>Пароль</span>
+                <input type="password" name="password" required></label>
+            <button type="submit" class="report-btn">Войти</button>
+        </form>
+        <p class="auth_alt">Нет аккаунта? <a href="{{ url_for('register') }}">Зарегистрироваться</a></p>
+    </div>
+</section>
+{% endblock %}

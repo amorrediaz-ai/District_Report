@@ -1,0 +1,34 @@
+{# Карточка обращения. Параметры: report #}
+<article class="report_card">
+    <div class="report_content">
+        <div class="report_top">
+            <span class="report_category">{{ report['type'] }}</span>
+            <span class="report_date">{{ report['Created_at']|localdt }}</span>
+        </div>
+
+        <h3><a href="{{ url_for('report_detail', report_id=report['ID']) }}">{{ report['Title'] }}</a></h3>
+
+        <p class="report_description">{{ report['Description']|truncate(220) }}</p>
+
+        {% if report['Photo'] %}
+        <a class="report_photo" href="{{ url_for('report_detail', report_id=report['ID']) }}">
+            <img src="{{ url_for('uploaded_file', filename=report['Photo']) }}" alt="Фото к обращению «{{ report['Title'] }}»" loading="lazy">
+        </a>
+        {% endif %}
+
+        <div class="report_bottom">
+            <span class="report_location">📍 {{ report['Location'] or 'Место не указано' }}</span>
+            <div class="report_actions">
+                <button type="button" class="like_btn{{ ' liked' if report['liked'] }}"
+                        data-like-url="{{ url_for('like_report', report_id=report['ID']) }}"
+                        aria-pressed="{{ 'true' if report['liked'] else 'false' }}"
+                        title="Поддержать обращение">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78z"/>
+    </svg></svg>
+                    <span class="like_count">{{ report['counter_likes'] }}</span>
+                </button>
+                <span class="report_status {{ report['status_class'] }}">{{ report['Status'] }}</span>
+            </div>
+        </div>
+    </div>
+</article>

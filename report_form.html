@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Сообщить о проблеме — District Report{% endblock %}
+{% block content %}
+<section class="main_preview narrow">
+    <div class="Report_header">
+        <h1>Сообщить о проблеме</h1>
+        <p>Опишите, что случилось и где. Обращение сразу появится в общем списке.</p>
+    </div>
+
+    {% if not g.user %}
+    <div class="notice">Вы отправляете обращение анонимно. <a href="{{ url_for('login', next=request.path) }}">Войдите</a>, чтобы оно появилось в разделе «Мои обращения».</div>
+    {% endif %}
+
+    <form method="post" class="card_form" enctype="multipart/form-data" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+        <label class="field">
+            <span>Заголовок</span>
+            <input type="text" name="title" value="{{ form.title }}" maxlength="100" placeholder="Например: Яма на дороге" required>
+            {% if errors.title %}<small class="error">{{ errors.title }}</small>{% endif %}
+        </label>
+
+        <label class="field">
+            <span>Категория</span>
+            <select name="category" required>
+                <option value="" disabled {{ 'selected' if not form.category }}>Выберите категорию</option>
+                {% for c in CATEGORIES %}
+                <option value="{{ c }}" {{ 'selected' if c == form.category }}>{{ c }}</option>
+                {% endfor %}
+            </select>
+            {% if errors.category %}<small class="error">{{ errors.category }}</small>{% endif %}
+        </label>
+
+        <label class="field">
+            <span>Место</span>
+            <input type="text" name="location" value="{{ form.location }}" maxlength="120" placeholder="Улица, дом или ориентир" required>
+            {% if errors.location %}<small class="error">{{ errors.location }}</small>{% endif %}
+        </label>
+
+        <label class="field">
+            <span>Описание</span>
+            <textarea name="description" rows="6" maxlength="2000" placeholder="Что именно произошло, как давно, кого это затрагивает" required>{{ form.description }}</textarea>
+            {% if errors.description %}<small class="error">{{ errors.description }}</small>{% endif %}
+        </label>
+
+        <div class="field photo_field">
+            <span>Фото <em class="optional">(необязательно)</em></span>
+            <input type="file" name="photo" id="photo_input" accept="image/jpeg,image/png,image/webp,image/gif" data-max-mb="5" hidden>
+            <label for="photo_input" class="photo_drop" id="photo_drop">
+                <img id="photo_preview" alt="" hidden>
+                <span id="photo_hint">📷 Нажмите, чтобы выбрать фото<small>JPG, PNG, WebP или GIF, до 5 МБ</small></span>
+            </label>
+            <button type="button" class="link_button photo_clear" id="photo_clear" hidden>Убрать фото</button>
+            <small class="error" id="photo_error">{{ errors.photo or '' }}</small>
+        </div>
+
+        <div class="form_actions">
+            <button type="submit" class="report-btn">Отправить обращение</button>
+            <a href="{{ url_for('home') }}" class="reset_link">Отмена</a>
+        </div>
+    </form>
+</section>
+{% endblock %}

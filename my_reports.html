@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Мои обращения — District Report{% endblock %}
+{% block content %}
+<section class="main_preview">
+    <div class="Report_header">
+        <h1>Мои обращения</h1>
+        <p>Обращения, отправленные из вашего аккаунта</p>
+    </div>
+    <div class="report_list">
+        {% for report in reports %}
+            {% include "_card.html" %}
+        {% else %}
+            <div class="empty">
+                <p>Вы пока не отправляли обращений.</p>
+                <a href="{{ url_for('new_report') }}" class="report-btn">Сообщить о проблеме</a>
+            </div>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

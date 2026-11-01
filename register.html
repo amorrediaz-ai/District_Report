@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Регистрация — District Report{% endblock %}
+{% block content %}
+<section class="main_preview auth">
+    <div class="auth_card">
+        <h1>Регистрация</h1>
+        <form method="post" class="card_form" novalidate>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label class="field"><span>Имя</span>
+                <input type="text" name="name" value="{{ form.name }}" required autofocus>
+                {% if errors.name %}<small class="error">{{ errors.name }}</small>{% endif %}</label>
+            <label class="field"><span>Email</span>
+                <input type="email" name="email" value="{{ form.email }}" required>
+                {% if errors.email %}<small class="error">{{ errors.email }}</small>{% endif %}</label>
+            <label class="field"><span>Пароль</span>
+                <input type="password" name="password" required minlength="6">
+                {% if errors.password %}<small class="error">{{ errors.password }}</small>{% endif %}</label>
+            <label class="field"><span>Повторите пароль</span>
+                <input type="password" name="password2" required></label>
+            <button type="submit" class="report-btn">Создать аккаунт</button>
+        </form>
+        <p class="auth_alt">Уже есть аккаунт? <a href="{{ url_for('login') }}">Войти</a></p>
+    </div>
+</section>
+{% endblock %}

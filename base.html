@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <title>{% block title %}District Report{% endblock %}</title>
+    <link rel="icon" href="{{ url_for('static', filename='svg/logo.svg') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="page_container">
+    <header class="header">
+
+        <div class="head_logo">
+            <a href="{{ url_for('home') }}">
+                <img src="{{ url_for('static', filename='svg/logo.svg') }}" alt="">
+                <span>District Report</span>
+            </a>
+        </div>
+
+        <nav class="navigation_bar">
+            <a href="{{ url_for('home') }}" class="{{ 'active' if request.endpoint in ('home', 'report_detail') }}">Обращения</a>
+            <a href="{{ url_for('how_it_works') }}" class="{{ 'active' if request.endpoint == 'how_it_works' }}">Как это работает</a>
+            {% if g.user %}
+            <a href="{{ url_for('my_reports') }}" class="{{ 'active' if request.endpoint == 'my_reports' }}">Мои обращения</a>
+            {% endif %}
+        </nav>
+
+        <div class="login">
+            {% if g.user %}
+                <span class="user_name">{{ g.user['Name'] }}{% if g.user['Is_admin'] %} <em class="admin_badge">админ</em>{% endif %}</span>
+                <form method="post" action="{{ url_for('logout') }}" class="inline_form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="link_button">Выйти</button>
+                </form>
+            {% else %}
+                <a href="{{ url_for('login') }}">Войти</a>
+            {% endif %}
+            <a id="report_problem" href="{{ url_for('new_report') }}">Сообщить о проблеме</a>
+        </div>
+    </header>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash_wrap">
+        {% for category, message in messages %}
+        <div class="flash flash_{{ category }}" role="status">{{ message }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <span>© District Report — прототип сервиса обращений жителей</span>
+    </footer>
+</div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
+</body>
+</html>

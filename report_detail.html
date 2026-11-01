@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ report['Title'] }} — District Report{% endblock %}
+{% block content %}
+<section class="main_preview narrow">
+    <a href="{{ url_for('home') }}" class="back_link">← Ко всем обращениям</a>
+
+    <article class="report_card detail_card">
+        <div class="report_content">
+            <div class="report_top">
+                <span class="report_category">{{ report['type'] }}</span>
+                <span class="report_date">{{ report['Created_at']|localdt }}</span>
+            </div>
+
+            <h1 class="detail_title">{{ report['Title'] }}</h1>
+            <p class="report_description detail_text">{{ report['Description'] }}</p>
+
+            {% if report['Photo'] %}
+            <a class="detail_photo" href="{{ url_for('uploaded_file', filename=report['Photo']) }}" target="_blank" rel="noopener">
+                <img src="{{ url_for('uploaded_file', filename=report['Photo']) }}" alt="Фото к обращению «{{ report['Title'] }}»">
+            </a>
+            {% endif %}
+
+            <dl class="meta">
+                <div><dt>Место</dt><dd>📍 {{ report['Location'] or 'Не указано' }}</dd></div>
+                <div><dt>Автор</dt><dd>{{ report['Author'] or 'Аноним' }}</dd></div>
+                <div><dt>Номер</dt><dd>№ {{ report['ID'] }}</dd></div>
+            </dl>
+
+            <div class="report_bottom">
+                <button type="button" class="like_btn{{ ' liked' if report['liked'] }}"
+                        data-like-url="{{ url_for('like_report', report_id=report['ID']) }}"
+                        aria-pressed="{{ 'true' if report['liked'] else 'false' }}">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.5 2.6 5 6 5c2 0 3.3 1 4 2.2h.1c.7-1.2 2-2.2 4-2.2 3.4 0 5.1 3.5 3.6 6.8C19.5 16.4 12 21 12 21z"/></svg>
+                    <span class="like_count">{{ report['counter_likes'] }}</span>
+                    <span class="like_label">Поддерживаю</span>
+                </button>
+                <span class="report_status {{ report['status_class'] }}">{{ report['Status'] }}</span>
+            </div>
+        </div>
+    </article>
+
+    {% if g.user and g.user['Is_admin'] %}
+    <div class="admin_panel">
+        <h2>Управление (админ)</h2>
+        <form method="post" action="{{ url_for('change_status', report_id=report['ID']) }}" class="admin_row">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <select name="status" aria-label="Статус">
+                {% for s in STATUSES %}
+                <option value="{{ s }}" {{ 'selected' if s == report['Status'] }}>{{ s }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="report-btn small">Сменить статус</button>
+        </form>
+        <form method="post" action="{{ url_for('delete_report', report_id=report['ID']) }}"
+              onsubmit="return confirm('Удалить обращение безвозвратно?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="danger_btn">Удалить обращение</button>
+        </form>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}

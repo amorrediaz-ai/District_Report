@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Обращения жителей — District Report{% endblock %}
+
+{% block content %}
+<section class="main_preview">
+    <div class="Report_header">
+        <h1>Обращение жителей</h1>
+        <p>Все обращения жителей города</p>
+    </div>
+
+    <div class="stats">
+        <div class="stat"><b>{{ stats.total }}</b><span>всего</span></div>
+        <div class="stat"><b>{{ stats.pending }}</b><span>на рассмотрении</span></div>
+        <div class="stat"><b>{{ stats.in_progress }}</b><span>в работе</span></div>
+        <div class="stat stat_ok"><b>{{ stats.resolved }}</b><span>решено</span></div>
+    </div>
+
+    <form class="filters" id="filter_form" method="get" action="{{ url_for('home') }}">
+        <div class="toolbar">
+            <div class="search-box">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7"></circle>
+                    <line x1="16.5" y1="16.5" x2="21" y2="21"></line>
+                </svg>
+                <input type="search" name="q" value="{{ q }}" placeholder="Поиск обращений..." autocomplete="off" aria-label="Поиск">
+            </div>
+            <a href="{{ url_for('new_report') }}" class="report-btn">Сообщить</a>
+        </div>
+
+        <div class="filter_row">
+            <select name="category" aria-label="Категория">
+                <option value="">Все категории</option>
+                {% for c in CATEGORIES %}
+                <option value="{{ c }}" {{ 'selected' if c == category }}>{{ c }}</option>
+                {% endfor %}
+            </select>
+            <select name="status" aria-label="Статус">
+                <option value="">Любой статус</option>
+                {% for s in STATUSES %}
+                <option value="{{ s }}" {{ 'selected' if s == status }}>{{ s }}</option>
+                {% endfor %}
+            </select>
+            <select name="sort" aria-label="Сортировка">
+                {% for key, (label, _) in sorts.items() %}
+                <option value="{{ key }}" {{ 'selected' if key == sort }}>{{ label }}</option>
+                {% endfor %}
+            </select>
+            {% if q or category or status or sort != 'new' %}
+            <a class="reset_link" href="{{ url_for('home') }}">Сбросить</a>
+            {% endif %}
+        </div>
+    </form>
+
+    <div id="results">
+        <p class="results_count">Найдено: {{ total }}</p>
+
+        <div class="report_list">
+            {% for report in reports %}
+                {% include "_card.html" %}
+            {% else %}
+                <div class="empty">
+                    <p>{% if q or category or status %}По вашему запросу ничего не найдено.{% else %}Обращений пока нет.{% endif %}</p>
+                    <a href="{{ url_for('new_report') }}" class="report-btn">Сообщить о проблеме</a>
+                </div>
+            {% endfor %}
+        </div>
+
+        {% if pages > 1 %}
+        <nav class="pagination" aria-label="Страницы">
+            {% if page > 1 %}<a href="{{ page_url(page - 1) }}">←</a>{% endif %}
+            {% for p in range(1, pages + 1) %}
+                {% if p == page %}<span class="current">{{ p }}</span>
+                {% else %}<a href="{{ page_url(p) }}">{{ p }}</a>{% endif %}
+            {% endfor %}
+            {% if page < pages %}<a href="{{ page_url(page + 1) }}">→</a>{% endif %}
+        </nav>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}
