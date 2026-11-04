@@ -26,6 +26,9 @@
             {% if g.user %}
             <a href="{{ url_for('my_reports') }}" class="{{ 'active' if request.endpoint == 'my_reports' }}">Мои обращения</a>
             {% endif %}
+            {% if g.user and g.user['Is_admin'] %}
+            <a href="{{ url_for('admin_dashboard') }}" class="{{ 'active' if request.endpoint == 'admin_dashboard' }}">Управление</a>
+            {% endif %}
         </nav>
 
         <div class="login">

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Управление обращениями — District Report{% endblock %}
+{% block content %}
+<section class="main_preview">
+    <div class="Report_header">
+        <h1>Управление обращениями</h1>
+        <p>Выберите обращение, ответьте жителю и обновите статус.</p>
+    </div>
+    <div class="stats">
+        <div class="stat"><b>{{ stats.total }}</b><span>всего</span></div>
+        <div class="stat"><b>{{ stats.pending }}</b><span>на рассмотрении</span></div>
+        <div class="stat"><b>{{ stats.in_progress }}</b><span>в работе</span></div>
+        <div class="stat stat_ok"><b>{{ stats.resolved }}</b><span>решено</span></div>
+    </div>
+    <form class="filters" method="get" action="{{ url_for('admin_dashboard') }}">
+        <div class="toolbar">
+            <div class="search-box"><input type="search" name="q" value="{{ q }}" placeholder="Заголовок, адрес или описание" aria-label="Поиск обращений"></div>
+        </div>
+        <div class="filter_row">
+            <select name="category" aria-label="Категория">
+                <option value="">Все категории</option>
+                {% for c in CATEGORIES %}<option value="{{ c }}" {{ 'selected' if c == category }}>{{ c }}</option>{% endfor %}
+            </select>
+            <select name="status" aria-label="Статус">
+                <option value="">Любой статус</option>
+                {% for s in STATUSES %}<option value="{{ s }}" {{ 'selected' if s == status }}>{{ s }}</option>{% endfor %}
+            </select>
+            <select name="sort" aria-label="Сортировка">
+                {% for key, (label, _) in sorts.items() %}<option value="{{ key }}" {{ 'selected' if key == sort }}>{{ label }}</option>{% endfor %}
+            </select>
+            <button type="submit" class="report-btn small">Найти</button>
+            {% if q or category or status or sort != 'new' %}<a class="reset_link" href="{{ url_for('admin_dashboard') }}">Сбросить</a>{% endif %}
+        </div>
+    </form>
+    <div class="admin_results_heading">
+        <p class="results_count">Найдено: {{ total }}</p>
+        <a class="export_link" href="{{ url_for('export_reports', q=q, category=category, status=status, sort=sort) }}">Скачать CSV · {{ total }}</a>
+    </div>
+    <div class="admin_table_wrap" role="region" aria-label="Список обращений" tabindex="0">
+        <table class="admin_table">
+            <thead><tr><th scope="col">Обращение</th><th scope="col">Категория и место</th><th scope="col">Статус</th><th scope="col">Поддержали</th></tr></thead>
+            <tbody>
+            {% for report in reports %}
+                <tr>
+                    <td><a href="{{ url_for('report_detail', report_id=report['ID']) }}">№ {{ report['ID'] }} · {{ report['Title'] }}</a><small>{{ report['Created_at']|localdt }}</small></td>
+                    <td>{{ report.type }}<small>{{ report['Location'] }}</small></td>
+                    <td><span class="report_status {{ report.status_class }}">{{ report['Status'] }}</span></td>
+                    <td>{{ report.counter_likes }}</td>
+                </tr>
+            {% else %}<tr><td colspan="4">По вашему запросу ничего не найдено.</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% if pages > 1 %}
+    <nav class="pagination" aria-label="Страницы обращений">
+        {% if page > 1 %}<a href="{{ page_url(page - 1) }}">← Назад</a>{% endif %}
+        <span class="current">{{ page }} / {{ pages }}</span>
+        {% if page < pages %}<a href="{{ page_url(page + 1) }}">Далее →</a>{% endif %}
+    </nav>
+    {% endif %}
+</section>
+{% endblock %}

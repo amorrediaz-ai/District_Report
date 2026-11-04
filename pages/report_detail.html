@@ -39,18 +39,41 @@
         </div>
     </article>
 
+    <section class="history_panel" aria-labelledby="history_title">
+        <h2 id="history_title">История обращения</h2>
+        <ol class="timeline">
+            <li>
+                <span class="report_date">{{ report['Created_at']|localdt }}</span>
+                <h3>Обращение создано</h3>
+            </li>
+            {% for update in updates %}
+            <li>
+                <span class="report_date">{{ update.created_at|localdt }} · Администратор</span>
+                <h3>{% if update.old_status != update.new_status %}{{ update.old_status }} → {{ update.new_status }}{% else %}Ответ администратора{% endif %}</h3>
+                {% if update.message %}<p class="detail_text">{{ update.message }}</p>{% endif %}
+            </li>
+            {% endfor %}
+        </ol>
+        {% if not updates %}<p class="history_hint">Новых ответов и изменений статуса пока нет.</p>{% endif %}
+    </section>
+
     {% if g.user and g.user['Is_admin'] %}
     <div class="admin_panel">
-        <h2>Управление (админ)</h2>
-        <form method="post" action="{{ url_for('change_status', report_id=report['ID']) }}" class="admin_row">
+        <h2>Ответить на обращение</h2>
+        <form method="post" action="{{ url_for('change_status', report_id=report['ID']) }}" class="admin_update_form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <select name="status" aria-label="Статус">
+            <label for="update_status">Статус</label>
+            <select id="update_status" name="status">
                 {% for s in STATUSES %}
                 <option value="{{ s }}" {{ 'selected' if s == report['Status'] }}>{{ s }}</option>
                 {% endfor %}
             </select>
-            <button type="submit" class="report-btn small">Сменить статус</button>
+            <label for="admin_message">Ответ жителю</label>
+            <textarea id="admin_message" name="message" rows="4" maxlength="2000" aria-describedby="reply_hint" placeholder="Что сделано и какой следующий шаг?"></textarea>
+            <p id="reply_hint" class="history_hint">До 2000 символов. Ответ будет виден всем. Можно ответить без изменения статуса.</p>
+            <button type="submit" class="report-btn small">Опубликовать изменения</button>
         </form>
+        <a class="back_link" href="{{ url_for('admin_dashboard') }}">← К управлению обращениями</a>
         <form method="post" action="{{ url_for('delete_report', report_id=report['ID']) }}"
               onsubmit="return confirm('Удалить обращение безвозвратно?');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

@@ -4,7 +4,7 @@
 {% block content %}
 <section class="main_preview">
     <div class="Report_header">
-        <h1>Обращение жителей</h1>
+        <h1>Обращения жителей</h1>
         <p>Все обращения жителей города</p>
     </div>
 
@@ -14,6 +14,20 @@
         <div class="stat"><b>{{ stats.in_progress }}</b><span>в работе</span></div>
         <div class="stat stat_ok"><b>{{ stats.resolved }}</b><span>решено</span></div>
     </div>
+
+    {% if category_stats %}
+    <details class="category_summary">
+        <summary>Обращения по категориям</summary>
+        <div class="category_grid">
+        {% for item in category_stats %}
+            <a class="category_item" href="{{ url_for('home', category=item.category) }}">
+                <span>{{ item.category }} <b>{{ item.total }}</b></span>
+                <span class="category_track" aria-hidden="true"><i style="width: {{ item.percent }}%"></i></span>
+            </a>
+        {% endfor %}
+        </div>
+    </details>
+    {% endif %}
 
     <form class="filters" id="filter_form" method="get" action="{{ url_for('home') }}">
         <div class="toolbar">
@@ -45,6 +59,7 @@
                 <option value="{{ key }}" {{ 'selected' if key == sort }}>{{ label }}</option>
                 {% endfor %}
             </select>
+            <button type="submit" class="report-btn small">Найти</button>
             {% if q or category or status or sort != 'new' %}
             <a class="reset_link" href="{{ url_for('home') }}">Сбросить</a>
             {% endif %}

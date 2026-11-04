@@ -1,5 +1,6 @@
 """Run against TEST_DATABASE_URL. Every run uses its own temporary schema."""
 import base64
+import csv
 import importlib
 import io
 import os
@@ -255,6 +256,124 @@ def test_missing_configuration_fails_clearly(module, monkeypatch):
     monkeypatch.delenv("DATABASE_URL")
     with pytest.raises(RuntimeError, match="DATABASE_URL"):
         module.connect_db()
+
+
+def test_admin_dashboard_export_permissions_and_filters(module):
+    visitor = module.app.test_client()
+    for path in ("/admin", "/admin/export.csv"):
+        assert visitor.get(path).status_code == 403
+    post(visitor, "/register", name="Житель", email="reader@example.test",
+         password="password123", password2="password123")
+    for path in ("/admin", "/admin/export.csv"):
+        assert visitor.get(path).status_code == 403
+    rid = report(visitor, '=HYPERLINK("https://example.test")')
+    other = report(visitor, "Другое обращение")
+    admin = admin_client(module)
+    post(admin, f"/report/{rid}/status", status="В работе")
+    response = admin.get("/admin", query_string={"status": "В работе"})
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "HYPERLINK" in html and "Другое обращение" not in html
+    exported = admin.get("/admin/export.csv", query_string={"status": "В работе"})
+    rows = list(csv.reader(io.StringIO(exported.data.decode("utf-8-sig"))))
+    assert len(rows) == 2 and rows[1][0] == str(rid)
+    assert rows[1][1].startswith("'=HYPERLINK")
+    assert "reader@example.test" not in exported.get_data(as_text=True)
+    assert exported.headers["Cache-Control"] == "no-store"
+    assert admin.get("/admin", query_string={"q": "' OR 1=1 --"}).status_code == 200
+    # Export includes all filtered records, not just the current page.
+    for i in range(module.PER_PAGE):
+        report(visitor, f"Экспорт {i}")
+    exported = admin.get("/admin/export.csv")
+    assert len(list(csv.reader(io.StringIO(exported.data.decode("utf-8-sig"))))) == module.PER_PAGE + 3
+    for payload in ("+SUM(1,2)", "-1+2", "@formula", " \t=1+2", "\ttext", "\rtext", "\ntext"):
+        assert module.csv_cell(payload).startswith("'")
+
+
+def test_replies_and_history_are_public_but_only_admin_can_write(module):
+    visitor = module.app.test_client()
+    rid = report(visitor)
+    url = f"/report/{rid}"
+    admin = admin_client(module)
+    assert post(visitor, url + "/status", status="Решено", message="forged").status_code == 403
+    assert admin.post(url + "/status", data={"status": "Решено"}).status_code == 400
+    assert post(admin, url + "/status", status="unknown").status_code == 400
+    assert post(admin, url + "/status", status="Решено", message="a" * 2001).status_code == 400
+    assert post(admin, url + "/status", status="На рассмотрении").status_code == 302
+    assert post(admin, url + "/status", status="В работе", message="Бригада назначена.").status_code == 302
+    assert post(admin, url + "/status", status="В работе", message="<script>alert(1)</script>").status_code == 302
+    html = visitor.get(url).get_data(as_text=True)
+    assert "Бригада назначена." in html
+    assert "&lt;script&gt;" in html and "<script>alert(1)</script>" not in html
+    assert "admin_message" not in html
+    with module.connect_db() as conn:
+        rows = conn.execute("SELECT * FROM report_update ORDER BY id").fetchall()
+        assert len(rows) == 2
+        assert rows[0]["old_status"] == "На рассмотрении"
+        assert rows[0]["new_status"] == rows[1]["old_status"] == rows[1]["new_status"] == "В работе"
+        assert all(row["actor_id"] and row["created_at"] for row in rows)
+    assert post(admin, "/report/999999/status", status="Решено").status_code == 404
+    post(admin, url + "/delete")
+    with module.connect_db() as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM report_update").fetchone()["n"] == 0
+
+
+def test_schema_upgrade_preserves_existing_records_and_is_repeatable(module):
+    visitor = module.app.test_client()
+    rid = report(visitor, photo=True)
+    post(visitor, f"/report/{rid}/like")
+    with module.connect_db() as conn:
+        original = conn.execute("SELECT * FROM report WHERE id=%s", (rid,)).fetchone()
+        users = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+        # Simulate the schema that existed before this feature.
+        conn.execute("DROP TABLE report_update")
+    module.init_db()
+    module.init_db()
+    with module.connect_db() as conn:
+        assert conn.execute("SELECT * FROM report WHERE id=%s", (rid,)).fetchone() == original
+        assert conn.execute("SELECT * FROM users ORDER BY id").fetchall() == users
+        assert conn.execute("SELECT COUNT(*) AS n FROM report_update").fetchone()["n"] == 0
+        assert conn.execute("SELECT COUNT(*) AS n FROM report_like").fetchone()["n"] == 1
+    with module.app.test_request_context("/"):
+        module.app.preprocess_request()
+        assert module.category_statistics() == [{"category": "Дороги и тротуары", "total": 1, "percent": 100}]
+
+
+def test_status_and_history_rollback_together(module):
+    rid = report(module.app.test_client())
+    admin = admin_client(module)
+    # A database failure during history insertion must roll back the status too.
+    with module.connect_db() as conn:
+        conn.execute("ALTER TABLE report_update ADD CONSTRAINT test_fail CHECK (message <> 'fail')")
+    try:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            post(admin, f"/report/{rid}/status", status="Решено", message="fail")
+        with module.connect_db() as conn:
+            assert conn.execute("SELECT status FROM report WHERE id=%s", (rid,)).fetchone()["status"] == "На рассмотрении"
+            assert conn.execute("SELECT COUNT(*) AS n FROM report_update").fetchone()["n"] == 0
+    finally:
+        with module.connect_db() as conn:
+            conn.execute("ALTER TABLE report_update DROP CONSTRAINT test_fail")
+
+
+@pytest.mark.skipif(os.environ.get("TEST_DB_SERIAL") == "1", reason="Embedded test database has one connection")
+def test_concurrent_admin_changes_have_consistent_history(module):
+    rid = report(module.app.test_client())
+    clients = [admin_client(module), admin_client(module)]
+    items = [(client, csrf(client), status) for client, status in zip(clients, ("В работе", "Решено"))]
+
+    def update(item):
+        client, token, status = item
+        assert client.post(f"/report/{rid}/status", data={"csrf_token": token, "status": status}).status_code == 302
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        list(workers.map(update, items))
+    with module.connect_db() as conn:
+        rows = conn.execute("SELECT * FROM report_update WHERE report_id=%s ORDER BY id", (rid,)).fetchall()
+        assert len(rows) == 2
+        assert rows[0]["old_status"] == "На рассмотрении"
+        assert rows[1]["old_status"] == rows[0]["new_status"]
+        assert conn.execute("SELECT status FROM report WHERE id=%s", (rid,)).fetchone()["status"] == rows[1]["new_status"]
 
 
 @pytest.mark.skipif(os.environ.get("TEST_DB_SERIAL") == "1", reason="Embedded test database has one connection")

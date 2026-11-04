@@ -4,13 +4,14 @@
 """
 from __future__ import annotations
 
+import csv
 import hashlib
 import math
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -267,7 +268,7 @@ def page_url(page: int) -> str:
 # --------------------------------------------------------------------------
 # Запросы к отчётам
 # --------------------------------------------------------------------------
-def fetch_reports(q: str, category: str, status: str, sort: str, page: int):
+def report_filters(q: str, category: str, status: str):
     where, params = [], []
 
     if q:
@@ -285,6 +286,11 @@ def fetch_reports(q: str, category: str, status: str, sort: str, page: int):
         params.append(status)
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    return where_sql, params
+
+
+def fetch_reports(q: str, category: str, status: str, sort: str, page: int):
+    where_sql, params = report_filters(q, category, status)
     db = get_db()
 
     total = db.execute(f"SELECT COUNT(*) AS total FROM Report r {where_sql}", params).fetchone()["total"]
@@ -341,8 +347,7 @@ def get_report_or_404(report_id: int) -> dict:
 # --------------------------------------------------------------------------
 # Страницы
 # --------------------------------------------------------------------------
-@app.route("/")
-def home():
+def read_filters():
     q = request.args.get("q", "").strip()[:100]
     category = request.args.get("category", "")
     status = request.args.get("status", "")
@@ -355,14 +360,71 @@ def home():
         status = ""
     if sort not in SORTS:
         sort = "new"
+    return q, category, status, sort, page
+
+
+def category_statistics():
+    rows = get_db().execute(
+        f"SELECT {TYPE_SQL} AS category, COUNT(*) AS total FROM report r "
+        f"GROUP BY {TYPE_SQL} ORDER BY total DESC, category"
+    ).fetchall()
+    maximum = max((row["total"] for row in rows), default=1)
+    return [dict(row, percent=round(row["total"] * 100 / maximum)) for row in rows]
+
+
+@app.route("/")
+def home():
+    q, category, status, sort, page = read_filters()
 
     reports, total, page, pages = fetch_reports(q, category, status, sort, page)
     return render_template(
         "District_report.html",
         reports=reports, total=total, page=page, pages=pages,
         q=q, category=category, status=status, sort=sort, sorts=SORTS,
+        stats=fetch_stats(), category_stats=category_statistics(),
+    )
+
+
+@app.get("/admin")
+@admin_required
+def admin_dashboard():
+    q, category, status, sort, page = read_filters()
+    reports, total, page, pages = fetch_reports(q, category, status, sort, page)
+    return render_template(
+        "admin.html", reports=reports, total=total, page=page, pages=pages,
+        q=q, category=category, status=status, sort=sort, sorts=SORTS,
         stats=fetch_stats(),
     )
+
+
+def csv_cell(value):
+    """Keep user text from being interpreted as a spreadsheet formula."""
+    text = str(value or "")
+    if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n")):
+        return "'" + text
+    return text
+
+
+@app.get("/admin/export.csv")
+@admin_required
+def export_reports():
+    q, category, status, sort, _ = read_filters()
+    where_sql, params = report_filters(q, category, status)
+    rows = get_db().execute(
+        f"{SELECT_REPORT} {where_sql} ORDER BY {SORTS[sort][1]}", params
+    )
+    output = StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["Номер", "Заголовок", "Категория", "Место", "Статус", "Создано", "Поддержали"])
+    for row in rows:
+        writer.writerow([row["ID"], csv_cell(row["Title"]), csv_cell(row["type"]),
+                         csv_cell(row["Location"]), csv_cell(row["Status"]),
+                         localdt(row["Created_at"]), row["counter_likes"]])
+    response = app.response_class("\ufeff" + output.getvalue(), mimetype="text/csv")
+    response.headers["Content-Disposition"] = 'attachment; filename="district-reports.csv"'
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @app.route("/report/new", methods=["GET", "POST"])
@@ -410,7 +472,12 @@ def new_report():
 
 @app.route("/report/<int:report_id>")
 def report_detail(report_id: int):
-    return render_template("report_detail.html", report=get_report_or_404(report_id))
+    report = get_report_or_404(report_id)
+    updates = get_db().execute(
+        "SELECT old_status, new_status, message, created_at FROM report_update "
+        "WHERE report_id = %s ORDER BY id", (report_id,),
+    ).fetchall()
+    return render_template("report_detail.html", report=report, updates=updates)
 
 
 @app.post("/report/<int:report_id>/like")
@@ -446,13 +513,28 @@ def change_status(report_id: int):
     status = request.form.get("status", "")
     if status not in STATUSES:
         abort(400, "Неизвестный статус.")
+    message = request.form.get("message", "").strip()
+    if len(message) > 2000:
+        abort(400, "Ответ: не более 2000 символов.")
     db = get_db()
-    row = db.execute(
-        "UPDATE report SET status = %s WHERE id = %s RETURNING id", (status, report_id)
-    ).fetchone()
-    if row is None:
-        abort(404)
-    flash(f"Статус изменён: {status}.", "success")
+    with db.transaction():
+        row = db.execute(
+            f'SELECT {STATUS_SQL} AS status FROM report r WHERE id = %s FOR UPDATE',
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            abort(404)
+        # Old clients may submit only a status. No-op submissions add no history.
+        if row["status"] == status and not message:
+            flash("Изменений нет. Выберите другой статус или напишите ответ.", "info")
+        else:
+            db.execute("UPDATE report SET status = %s WHERE id = %s", (status, report_id))
+            db.execute(
+                """INSERT INTO report_update (report_id, actor_id, old_status, new_status, message)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                (report_id, g.user["ID"], row["status"], status, message),
+            )
+            flash("Изменения опубликованы в истории обращения.", "success")
     return redirect(url_for("report_detail", report_id=report_id))
 
 
