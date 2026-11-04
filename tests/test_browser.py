@@ -25,7 +25,7 @@ def test_map_gallery_and_notifications_in_browser(module, viewport):
     assert (dist / 'leaflet.js').is_file()
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = p.chromium.launch(channel=os.environ.get('PLAYWRIGHT_CHANNEL'))
             context = browser.new_context(viewport=viewport)
             context.route('https://unpkg.com/leaflet@1.9.4/dist/**', lambda route: route.fulfill(
                 path=str(dist / ('leaflet.css' if route.request.url.endswith('.css') else 'leaflet.js')),
