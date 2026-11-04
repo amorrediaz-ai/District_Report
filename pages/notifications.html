@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Уведомления — District Report{% endblock %}
+{% block content %}
+<section class="main_preview narrow">
+    <div class="Report_header"><h1>Уведомления</h1><p>Ответы администратора и изменения статуса ваших обращений.</p></div>
+    <div class="notification_toolbar">
+        <a href="{{ url_for('notifications') }}" {{ 'aria-current=page' if not only_unread }}>Все</a>
+        <a href="{{ url_for('notifications', unread=1) }}" {{ 'aria-current=page' if only_unread }}>Непрочитанные · {{ unread_notifications }}</a>
+        <form method="post" action="{{ url_for('read_all_notifications') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="link_button" type="submit" {{ 'disabled' if not unread_notifications }}>Прочитать все</button>
+        </form>
+    </div>
+    <p class="history_hint">Список обновляется при открытии страницы. Счётчик новых уведомлений проверяется раз в минуту.</p>
+    <div class="notification_list">
+    {% for item in items %}
+        <article class="notification_item {{ 'unread' if not item.read_at }}">
+            <small>{{ item.created_at|localdt }}{{ ' · Новое' if not item.read_at }}</small>
+            <h2>{{ item.title }}</h2>
+            <p>{% if item.old_status != item.new_status %}{{ item.old_status }} → {{ item.new_status }}{% else %}Ответ администратора{% endif %}</p>
+            {% if item.message %}<p class="detail_text">{{ item.message }}</p>{% endif %}
+            <form method="post" action="{{ url_for('open_notification', notification_id=item.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="report-btn small" type="submit">Открыть обращение № {{ item.report_id }}</button>
+            </form>
+        </article>
+    {% else %}<div class="empty"><p>{{ 'Все уведомления прочитаны.' if only_unread else 'Здесь появятся ответы и изменения статуса ваших обращений.' }}</p><a href="{{ url_for('my_reports') }}">Мои обращения</a></div>{% endfor %}
+    </div>
+    {% if pages > 1 %}<nav class="pagination" aria-label="Страницы уведомлений">
+        {% if page > 1 %}<a href="{{ page_url(page-1) }}">← Назад</a>{% endif %}<span class="current">{{ page }} / {{ pages }}</span>{% if page < pages %}<a href="{{ page_url(page+1) }}">Далее →</a>{% endif %}
+    </nav>{% endif %}
+</section>
+{% endblock %}

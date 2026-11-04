@@ -6,6 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>{% block title %}District Report{% endblock %}</title>
     <link rel="icon" href="{{ url_for('static', filename='svg/logo.svg') }}">
+    {% if map_enabled %}<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous">{% endif %}
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -22,9 +23,11 @@
 
         <nav class="navigation_bar">
             <a href="{{ url_for('home') }}" class="{{ 'active' if request.endpoint in ('home', 'report_detail') }}">Обращения</a>
+            <a href="{{ url_for('report_map') }}" class="{{ 'active' if request.endpoint == 'report_map' }}">Карта</a>
             <a href="{{ url_for('how_it_works') }}" class="{{ 'active' if request.endpoint == 'how_it_works' }}">Как это работает</a>
             {% if g.user %}
             <a href="{{ url_for('my_reports') }}" class="{{ 'active' if request.endpoint == 'my_reports' }}">Мои обращения</a>
+            <a href="{{ url_for('notifications') }}" class="{{ 'active' if request.endpoint == 'notifications' }}">Уведомления <span class="notification_badge" id="notification_count" data-url="{{ url_for('notification_count') }}" aria-label="Непрочитанных: {{ unread_notifications }}" {{ 'hidden' if not unread_notifications }}>{{ unread_notifications }}</span></a>
             {% endif %}
             {% if g.user and g.user['Is_admin'] %}
             <a href="{{ url_for('admin_dashboard') }}" class="{{ 'active' if request.endpoint == 'admin_dashboard' }}">Управление</a>
@@ -65,5 +68,9 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
+{% if map_enabled %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous" defer></script>
+<script src="{{ url_for('static', filename='js/maps.js') }}" defer></script>
+{% endif %}
 </body>
 </html>

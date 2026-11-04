@@ -86,53 +86,73 @@
   }
 
 
-  /* ---------- Фото в форме: предпросмотр и проверка размера ---------- */
+  /* Несколько фотографий: предпросмотр и общий лимит с сохранёнными фото. */
   var input = document.getElementById("photo_input");
   if (input) {
     var drop = document.getElementById("photo_drop"),
         preview = document.getElementById("photo_preview"),
-        hint = document.getElementById("photo_hint"),
         clearBtn = document.getElementById("photo_clear"),
         err = document.getElementById("photo_error"),
-        maxMb = parseFloat(input.dataset.maxMb) || 5,
-        objectUrl = null;
+        objectUrls = [], maxMb = Number(input.dataset.maxMb),
+        maxPhotos = Number(input.dataset.maxPhotos), existing = Number(input.dataset.existingCount);
 
-    function reset() {
-      input.value = "";
-      if (objectUrl) { URL.revokeObjectURL(objectUrl); objectUrl = null; }
-      preview.hidden = true; preview.removeAttribute("src");
-      hint.hidden = false; clearBtn.hidden = true;
+    function photoError() {
+      var files = Array.from(input.files);
+      var removed = input.form.querySelectorAll('input[name="remove_photos"]:checked').length;
+      if (files.length + existing - removed > maxPhotos) return "Всего можно сохранить не более " + maxPhotos + " фото. Уберите лишние или отметьте старые для удаления.";
+      for (var file of files) {
+        if (!/^image\/(jpeg|png|webp|gif)$/.test(file.type)) return "Допустимы JPG, PNG, WebP и GIF.";
+        if (file.size > maxMb * 1024 * 1024) return "Каждое фото должно быть не больше " + maxMb + " МБ.";
+      }
+      return "";
     }
-
-    function handle(file) {
-      err.textContent = "";
-      if (!file) { reset(); return; }
-      if (!/^image\/(jpeg|png|webp|gif)$/.test(file.type)) {
-        reset(); err.textContent = "Допустимы только изображения JPG, PNG, WebP или GIF."; return;
-      }
-      if (file.size > maxMb * 1024 * 1024) {
-        reset(); err.textContent = "Фото слишком большое (максимум " + maxMb + " МБ)."; return;
-      }
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-      objectUrl = URL.createObjectURL(file);
-      preview.src = objectUrl; preview.hidden = false;
-      hint.hidden = true; clearBtn.hidden = false;
+    function showPhotos() {
+      objectUrls.forEach(function (url) { URL.revokeObjectURL(url); });
+      objectUrls = []; preview.replaceChildren();
+      err.textContent = photoError();
+      var files = Array.from(input.files);
+      files.slice(0, maxPhotos).forEach(function (file) {
+        if (!/^image\/(jpeg|png|webp|gif)$/.test(file.type) || file.size > maxMb * 1024 * 1024) return;
+        var figure = document.createElement("figure"), img = document.createElement("img"), caption = document.createElement("figcaption");
+        var url = URL.createObjectURL(file); objectUrls.push(url);
+        img.src = url; img.alt = "Выбранное фото: " + file.name;
+        caption.textContent = file.name;
+        figure.append(img, caption); preview.appendChild(figure);
+      });
+      preview.hidden = !preview.childElementCount; clearBtn.hidden = !files.length;
     }
-
-    input.addEventListener("change", function () { handle(input.files[0]); });
-    clearBtn.addEventListener("click", function () { err.textContent = ""; reset(); });
-
-    ["dragenter", "dragover"].forEach(function (ev) {
-      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("drag"); });
+    input.addEventListener("change", showPhotos);
+    input.form.querySelectorAll('input[name="remove_photos"]').forEach(function (box) {
+      box.addEventListener("change", function () { err.textContent = photoError(); });
     });
-    ["dragleave", "drop"].forEach(function (ev) {
-      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove("drag"); });
+    input.form.addEventListener("submit", function (event) {
+      var error = photoError();
+      if (error) { event.preventDefault(); dirty = true; err.textContent = error; input.focus(); }
     });
-    drop.addEventListener("drop", function (e) {
-      if (e.dataTransfer.files.length) {
-        input.files = e.dataTransfer.files; handle(input.files[0]);
+    clearBtn.addEventListener("click", function () { input.value = ""; showPhotos(); input.dispatchEvent(new Event("change", {bubbles: true})); });
+    ["dragenter", "dragover"].forEach(function (name) { drop.addEventListener(name, function (event) { event.preventDefault(); drop.classList.add("drag"); }); });
+    ["dragleave", "drop"].forEach(function (name) { drop.addEventListener(name, function (event) { event.preventDefault(); drop.classList.remove("drag"); }); });
+    drop.addEventListener("drop", function (event) {
+      if (event.dataTransfer.files.length) {
+        try { input.files = event.dataTransfer.files; input.dispatchEvent(new Event("change", {bubbles: true})); }
+        catch (_) { err.textContent = "Выберите фото с помощью кнопки загрузки."; }
       }
     });
+  }
+
+  /* Только счётчик внутри аккаунта: без email и браузерных push-разрешений. */
+  var badge = document.getElementById("notification_count"), checking = false;
+  if (badge) {
+    setInterval(function () {
+      if (document.hidden || checking) return;
+      checking = true;
+      var controller = new AbortController(), timeout = setTimeout(function () { controller.abort(); }, 10000);
+      fetch(badge.dataset.url, {credentials: "same-origin", cache: "no-store", signal: controller.signal})
+        .then(function (response) { if (!response.ok) throw new Error(response.status); return response.json(); })
+        .then(function (data) { badge.textContent = data.unread; badge.hidden = !data.unread; badge.setAttribute("aria-label", "Непрочитанных: " + data.unread); })
+        .catch(function () {})
+        .finally(function () { clearTimeout(timeout); checking = false; });
+    }, 60000);
   }
 
   /* ---------- Автоскрытие уведомлений ---------- */

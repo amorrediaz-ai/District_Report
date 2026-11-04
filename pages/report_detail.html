@@ -14,10 +14,12 @@
             <h1 class="detail_title">{{ report['Title'] }}</h1>
             <p class="report_description detail_text">{{ report['Description'] }}</p>
 
-            {% if report['Photo'] %}
-            <a class="detail_photo" href="{{ url_for('uploaded_file', filename=report['Photo']) }}" target="_blank" rel="noopener">
-                <img src="{{ url_for('uploaded_file', filename=report['Photo']) }}" alt="Фото к обращению «{{ report['Title'] }}»">
-            </a>
+            {% if photos %}
+            <div class="photo_gallery" aria-label="Фотографии обращения">
+            {% for photo in photos %}
+                <a href="{{ url_for('uploaded_file', filename=photo.name) }}" target="_blank" rel="noopener"><img src="{{ url_for('uploaded_file', filename=photo.name) }}" alt="Фото {{ loop.index }} к обращению «{{ report['Title'] }}»" loading="lazy"></a>
+            {% endfor %}
+            </div>
             {% endif %}
 
             <dl class="meta">
@@ -39,6 +41,13 @@
             </div>
         </div>
     </article>
+    {% if map_enabled %}
+    <section class="history_panel">
+        <h2>Место обращения</h2>
+        <div id="location_map" class="district_map" data-mode="detail" data-latitude="{{ report.latitude }}" data-longitude="{{ report.longitude }}" aria-label="Место обращения на карте"></div>
+        <p id="map_feedback" class="history_hint" role="status">Координаты: {{ report.latitude }}, {{ report.longitude }}</p>
+    </section>
+    {% endif %}
     {% if g.user and report['User_id'] == g.user['ID'] %}
     <div class="owner_actions detail_owner_actions">
         <a class="report-btn small" href="{{ url_for('edit_report', report_id=report['ID']) }}">Редактировать обращение</a>
