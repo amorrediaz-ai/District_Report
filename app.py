@@ -66,7 +66,7 @@ SELECT_REPORT = f"""
            COALESCE(r.counter_likes, 0) AS counter_likes,
            {STATUS_SQL} AS "Status",
            {TYPE_SQL} AS type,
-           r.created_at AS "Created_at", r.photo AS "Photo",
+           r.created_at AS "Created_at", r.photo AS "Photo", r.updated_at, r.revision,
            u.name AS "Author"
     FROM Report r
     LEFT JOIN Users u ON u.ID = r.User_id
@@ -289,8 +289,11 @@ def report_filters(q: str, category: str, status: str):
     return where_sql, params
 
 
-def fetch_reports(q: str, category: str, status: str, sort: str, page: int):
+def fetch_reports(q: str, category: str, status: str, sort: str, page: int, user_id=None):
     where_sql, params = report_filters(q, category, status)
+    if user_id is not None:
+        where_sql += (" AND " if where_sql else "WHERE ") + "r.user_id = %s"
+        params.append(user_id)
     db = get_db()
 
     total = db.execute(f"SELECT COUNT(*) AS total FROM Report r {where_sql}", params).fetchone()["total"]
@@ -320,13 +323,14 @@ def fetch_reports(q: str, category: str, status: str, sort: str, page: int):
     return reports, total, page, pages
 
 
-def fetch_stats() -> dict:
+def fetch_stats(user_id=None) -> dict:
     row = get_db().execute(
         f"""SELECT COUNT(*) AS total,
                    COUNT(*) FILTER (WHERE {STATUS_SQL} = 'Решено') AS resolved,
                    COUNT(*) FILTER (WHERE {STATUS_SQL} = 'В работе') AS in_progress,
                    COUNT(*) FILTER (WHERE {STATUS_SQL} = '{DEFAULT_STATUS}') AS pending
-            FROM Report r"""
+            FROM Report r""" + (" WHERE r.user_id = %s" if user_id is not None else ""),
+        (user_id,) if user_id is not None else (),
     ).fetchone()
     return dict(row)
 
@@ -427,6 +431,19 @@ def export_reports():
     return response
 
 
+def validate_report_form(form):
+    errors = {}
+    if not 3 <= len(form["title"]) <= 100:
+        errors["title"] = "Заголовок: от 3 до 100 символов."
+    if not 2 <= len(form["location"]) <= 120:
+        errors["location"] = "Укажите место: от 2 до 120 символов."
+    if form["category"] not in CATEGORIES:
+        errors["category"] = "Выберите категорию."
+    if not 10 <= len(form["description"]) <= 2000:
+        errors["description"] = "Описание: от 10 до 2000 символов."
+    return errors
+
+
 @app.route("/report/new", methods=["GET", "POST"])
 def new_report():
     form = {"title": "", "location": "", "category": "", "description": ""}
@@ -434,14 +451,7 @@ def new_report():
 
     if request.method == "POST":
         form = {k: request.form.get(k, "").strip() for k in form}
-        if not 3 <= len(form["title"]) <= 100:
-            errors["title"] = "Заголовок: от 3 до 100 символов."
-        if not 2 <= len(form["location"]) <= 120:
-            errors["location"] = "Укажите место: от 2 до 120 символов."
-        if form["category"] not in CATEGORIES:
-            errors["category"] = "Выберите категорию."
-        if not 10 <= len(form["description"]) <= 2000:
-            errors["description"] = "Описание: от 10 до 2000 символов."
+        errors = validate_report_form(form)
 
         photo = None
         if not errors:
@@ -468,6 +478,57 @@ def new_report():
             return redirect(url_for("report_detail", report_id=row["id"]))
 
     return render_template("report_form.html", form=form, errors=errors)
+
+
+@app.route("/report/<int:report_id>/edit", methods=["GET", "POST"])
+@login_required
+def edit_report(report_id):
+    report = get_report_or_404(report_id)
+    if report["User_id"] != g.user["ID"]:
+        abort(403)
+    form = {"title": report["Title"] or "", "location": report["Location"] or "",
+            "description": report["Description"] or "", "category": report["type"]}
+    errors = {}
+    revision = request.form.get("revision", type=int) if request.method == "POST" else report["revision"]
+    remove_photo = request.form.get("remove_photo") == "1"
+    if request.method == "POST":
+        form = {key: request.form.get(key, "").strip() for key in form}
+        errors = validate_report_form(form)
+        photo = None
+        if not errors:
+            photo, photo_error = read_photo(request.files.get("photo"))
+            if photo_error:
+                errors["photo"] = photo_error
+        if not errors:
+            db = get_db()
+            with db.transaction():
+                current = db.execute(
+                    "SELECT user_id, revision FROM report WHERE id=%s FOR UPDATE", (report_id,)
+                ).fetchone()
+                if current is None:
+                    abort(404)
+                if current["user_id"] != g.user["ID"]:
+                    abort(403)
+                if revision is None or revision != current["revision"]:
+                    errors["conflict"] = "Обращение уже изменено в другой вкладке. Скопируйте свой текст и откройте актуальную версию перед повторным редактированием."
+                else:
+                    db.execute(
+                        """UPDATE report SET title=%s, location=%s, type=%s, description=%s,
+                           updated_at=CURRENT_TIMESTAMP, revision=revision+1 WHERE id=%s""",
+                        (form["title"], form["location"], form["category"], form["description"], report_id),
+                    )
+                    # A selected replacement takes precedence over removal. Otherwise preserve the photo.
+                    if photo or remove_photo:
+                        db.execute(
+                            "UPDATE report SET photo=%s, photo_data=%s, photo_mime=%s WHERE id=%s",
+                            (photo["name"] if photo else None, photo["data"] if photo else None,
+                             photo["mime"] if photo else None, report_id),
+                        )
+            if not errors:
+                flash("Ваше обращение обновлено.", "success")
+                return redirect(url_for("report_detail", report_id=report_id))
+    return render_template("report_form.html", form=form, errors=errors, editing=report,
+                           revision=revision, remove_photo=remove_photo), (409 if errors.get("conflict") else 200)
 
 
 @app.route("/report/<int:report_id>")
@@ -538,18 +599,25 @@ def change_status(report_id: int):
     return redirect(url_for("report_detail", report_id=report_id))
 
 
-@app.post("/report/<int:report_id>/delete")
-@admin_required
+@app.route("/report/<int:report_id>/delete", methods=["GET", "POST"])
 def delete_report(report_id: int):
+    if not g.user:
+        abort(403)
     db = get_db()
+    report = get_report_or_404(report_id)
+    if not g.user["Is_admin"] and report["User_id"] != g.user["ID"]:
+        abort(403)
+    if request.method == "GET":
+        return render_template("delete_report.html", report=report)
+    # Recheck ownership in the mutation itself; cascade removes likes and history.
     row = db.execute(
-        "DELETE FROM report WHERE id = %s RETURNING id", (report_id,)
+        "DELETE FROM report WHERE id=%s AND (user_id=%s OR %s) RETURNING id",
+        (report_id, g.user["ID"], g.user["Is_admin"]),
     ).fetchone()
     if row is None:
         abort(404)
-    # The photo is in the same row, and report_like has ON DELETE CASCADE.
     flash("Обращение удалено.", "info")
-    return redirect(url_for("home"))
+    return redirect(url_for("admin_dashboard" if g.user["Is_admin"] else "my_reports"))
 
 
 @app.route("/uploads/<path:filename>")
@@ -648,17 +716,21 @@ def logout():
 @app.route("/my")
 @login_required
 def my_reports():
-    rows = get_db().execute(
-        f"{SELECT_REPORT} WHERE r.User_id = %s ORDER BY r.Created_at DESC, r.ID DESC",
-        (g.user["ID"],),
-    ).fetchall()
-    reports = []
-    for row in rows:
-        r = dict(row)
-        r["status_class"] = STATUSES.get(r["Status"], "pending")
-        r["liked"] = False
-        reports.append(r)
-    return render_template("my_reports.html", reports=reports)
+    q, category, status, sort, page = read_filters()
+    reports, total, page, pages = fetch_reports(q, category, status, sort, page, g.user["ID"])
+    updates = {}
+    if reports:
+        rows = get_db().execute(
+            """SELECT DISTINCT ON (report_id) report_id, new_status, message, created_at
+               FROM report_update WHERE report_id = ANY(%s) ORDER BY report_id, id DESC""",
+            ([r["ID"] for r in reports],),
+        ).fetchall()
+        updates = {r["report_id"]: r for r in rows}
+    for report in reports:
+        report["latest_update"] = updates.get(report["ID"])
+    return render_template("my_reports.html", reports=reports, stats=fetch_stats(g.user["ID"]),
+                           total=total, page=page, pages=pages, q=q, category=category,
+                           status=status, sort=sort, sorts=SORTS)
 
 
 # --------------------------------------------------------------------------

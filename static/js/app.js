@@ -3,6 +3,25 @@
 
   var csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || "";
 
+  /* Счётчики и предупреждение о несохранённых изменениях формы. */
+  var editor = document.getElementById("report_editor");
+  if (editor) {
+    var dirty = false;
+    function updateCounts() {
+      editor.querySelectorAll("[data-count-for]").forEach(function (counter) {
+        var field = editor.elements.namedItem(counter.dataset.countFor);
+        counter.textContent = field.value.length + " / " + field.maxLength;
+      });
+    }
+    editor.addEventListener("input", function () { dirty = true; updateCounts(); });
+    editor.addEventListener("change", function () { dirty = true; });
+    editor.addEventListener("submit", function () { dirty = false; });
+    window.addEventListener("beforeunload", function (event) {
+      if (dirty) { event.preventDefault(); event.returnValue = ""; }
+    });
+    updateCounts();
+  }
+
   /* ---------- Лайки ---------- */
   document.addEventListener("click", function (e) {
     var btn = e.target.closest(".like_btn");
@@ -121,3 +140,4 @@
     setTimeout(function () { el.style.transition = "opacity .4s"; el.style.opacity = "0"; setTimeout(function () { el.remove(); }, 450); }, 4500);
   });
 })();
+

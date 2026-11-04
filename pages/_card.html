@@ -24,11 +24,25 @@
                         aria-pressed="{{ 'true' if report['liked'] else 'false' }}"
                         title="Поддержать обращение">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78z"/>
-    </svg></svg>
+    </svg>
                     <span class="like_count">{{ report['counter_likes'] }}</span>
                 </button>
                 <span class="report_status {{ report['status_class'] }}">{{ report['Status'] }}</span>
             </div>
         </div>
+        {% if report.get('latest_update') %}
+        <div class="reply_preview">
+            <b>Обновление от администратора</b>
+            <small>{{ report.latest_update.created_at|localdt }} · {{ report.latest_update.new_status }}</small>
+            {% if report.latest_update.message %}<p>{{ report.latest_update.message|truncate(180) }}</p>{% endif %}
+        </div>
+        {% endif %}
+        {% if g.user and report['User_id'] == g.user['ID'] %}
+        <div class="owner_actions">
+            <a href="{{ url_for('edit_report', report_id=report['ID']) }}">Редактировать</a>
+            <a class="delete_link" href="{{ url_for('delete_report', report_id=report['ID']) }}">Удалить</a>
+        </div>
+        {% endif %}
     </div>
 </article>
+

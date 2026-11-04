@@ -403,3 +403,181 @@ def test_concurrent_votes_do_not_lose_updates(module):
     with module.connect_db() as conn:
         assert conn.execute("SELECT counter_likes FROM report WHERE id=%s", (rid,)).fetchone()["counter_likes"] == 6
         assert conn.execute("SELECT COUNT(*) AS n FROM report_like WHERE report_id=%s", (rid,)).fetchone()["n"] == 6
+
+
+def citizen_client(module, email='owner@example.test'):
+    client = module.app.test_client()
+    assert post(client, '/register', name='Житель', email=email,
+                password='citizen-password123', password2='citizen-password123').status_code == 302
+    return client
+
+
+def edited_data(**overrides):
+    return dict(dict(title='Обновлённое обращение', location='Астана, новый адрес',
+                     category='Освещение', description='Уточнённое описание проблемы во дворе.', revision='0'), **overrides)
+
+
+def test_only_owner_can_edit_and_controls_are_private(module):
+    owner = citizen_client(module)
+    other = citizen_client(module, 'other@example.test')
+    visitor = module.app.test_client()
+    rid = report(owner, photo=True)
+    path = f'/report/{rid}'
+    assert owner.get(path + '/edit').status_code == 200
+    assert f'{path}/edit' in owner.get(path).get_data(as_text=True)
+    for client in (other, admin_client(module)):
+        assert client.get(path + '/edit').status_code == 403
+        assert post(client, path + '/edit', **edited_data()).status_code == 403
+        assert f'{path}/edit' not in client.get(path).get_data(as_text=True)
+    assert visitor.get(path + '/edit').status_code == 302
+    assert post(visitor, path + '/edit', **edited_data()).status_code == 302
+    assert owner.post(path + '/edit', data=edited_data()).status_code == 400
+    with module.connect_db() as db:
+        assert db.execute('SELECT title FROM report WHERE id=%s', (rid,)).fetchone()['title'] == 'ЯМА на дороге'
+    assert owner.get('/report/999999/edit').status_code == 404
+
+
+def test_owner_edits_keep_admin_status_votes_history_and_photo(module):
+    owner = citizen_client(module)
+    rid = report(owner, photo=True)
+    path = f'/report/{rid}'
+    post(owner, path + '/like')
+    post(admin_client(module), path + '/status', status='Решено', message='Работа завершена.')
+    with module.connect_db() as db:
+        old = db.execute('SELECT * FROM report WHERE id=%s', (rid,)).fetchone()
+    # Editing is available in every status, but cannot forge ownership or moderation fields.
+    result = post(owner, path + '/edit', **edited_data(status='Отклонено', user_id='1', counter_likes='999'))
+    assert result.status_code == 302
+    with module.connect_db() as db:
+        row = db.execute('SELECT * FROM report WHERE id=%s', (rid,)).fetchone()
+        assert row['title'] == 'Обновлённое обращение' and row['type'] == 'Освещение'
+        assert row['status'] == 'Решено' and row['counter_likes'] == 1
+        assert row['user_id'] == old['user_id'] and row['created_at'] == old['created_at']
+        assert row['updated_at'] is not None and row['revision'] == 1
+        assert row['photo'] == old['photo'] and bytes(row['photo_data']) == PNG
+        assert db.execute('SELECT COUNT(*) AS n FROM report_update WHERE report_id=%s', (rid,)).fetchone()['n'] == 1
+    assert 'Изменено автором' in owner.get(path).get_data(as_text=True)
+    assert 'Работа завершена.' in owner.get('/my').get_data(as_text=True)
+
+
+def test_owner_can_replace_remove_and_retain_photo_on_errors(module):
+    owner = citizen_client(module)
+    rid = report(owner, photo=True)
+    path = f'/report/{rid}/edit'
+    with module.connect_db() as db:
+        old_photo = db.execute('SELECT photo FROM report WHERE id=%s', (rid,)).fetchone()['photo']
+    invalid = post(owner, path, **edited_data(title='x', remove_photo='1'))
+    assert invalid.status_code == 200 and 'Заголовок: от 3' in invalid.get_data(as_text=True)
+    bad_photo = post(owner, path, **edited_data(photo=(io.BytesIO(b'<script>bad</script>'), 'x.png')))
+    assert bad_photo.status_code == 200
+    assert owner.get('/uploads/' + old_photo).data == PNG
+    with module.connect_db() as db:
+        assert db.execute('SELECT revision FROM report WHERE id=%s', (rid,)).fetchone()['revision'] == 0
+    assert post(owner, path, **edited_data(remove_photo='1', photo=(io.BytesIO(PNG), 'new.png'))).status_code == 302
+    with module.connect_db() as db:
+        replacement = db.execute('SELECT photo FROM report WHERE id=%s', (rid,)).fetchone()['photo']
+    assert replacement != old_photo and owner.get('/uploads/' + replacement).data == PNG
+    assert owner.get('/uploads/' + old_photo).status_code == 404
+    assert post(owner, path, **edited_data(revision='1', remove_photo='1')).status_code == 302
+    with module.connect_db() as db:
+        row = db.execute('SELECT photo, photo_data, photo_mime FROM report WHERE id=%s', (rid,)).fetchone()
+        assert all(value is None for value in row.values())
+    assert owner.get('/uploads/' + replacement).status_code == 404
+
+
+def test_stale_edit_does_not_overwrite_newer_data(module):
+    owner = citizen_client(module)
+    rid = report(owner)
+    path = f'/report/{rid}/edit'
+    assert post(owner, path, **edited_data(title='Первая сохранённая версия')).status_code == 302
+    stale = post(owner, path, **edited_data(title='Из другой вкладки'))
+    assert stale.status_code == 409
+    assert 'Из другой вкладки' in stale.get_data(as_text=True)
+    assert 'уже изменено в другой вкладке' in stale.get_data(as_text=True)
+    assert post(owner, path, **edited_data(revision='not-an-integer')).status_code == 409
+    with module.connect_db() as db:
+        row = db.execute('SELECT title, revision FROM report WHERE id=%s', (rid,)).fetchone()
+        assert row == {'title': 'Первая сохранённая версия', 'revision': 1}
+
+
+def test_owner_delete_confirmation_permissions_and_cascade(module):
+    owner = citizen_client(module)
+    other = citizen_client(module, 'other@example.test')
+    rid = report(owner, photo=True)
+    path = f'/report/{rid}'
+    post(owner, path + '/like')
+    post(admin_client(module), path + '/status', status='В работе', message='Принято в работу.')
+    with module.connect_db() as db:
+        photo = db.execute('SELECT photo FROM report WHERE id=%s', (rid,)).fetchone()['photo']
+    assert owner.get(path + '/delete').status_code == 200
+    assert owner.get(path).status_code == 200  # GET confirmation never deletes.
+    for client in (other, module.app.test_client()):
+        assert client.get(path + '/delete').status_code == 403
+        assert post(client, path + '/delete').status_code == 403
+    assert owner.post(path + '/delete').status_code == 400
+    deleted = post(owner, path + '/delete')
+    assert deleted.status_code == 302 and deleted.location.endswith('/my')
+    assert owner.get(path).status_code == 404
+    assert owner.get('/uploads/' + photo).status_code == 404
+    with module.connect_db() as db:
+        for table in ('report_like', 'report_update'):
+            assert db.execute(f'SELECT COUNT(*) AS n FROM {table} WHERE report_id=%s', (rid,)).fetchone()['n'] == 0
+    assert post(owner, path + '/delete').status_code == 404
+
+
+def test_my_reports_filter_pagination_and_likes_never_include_other_owners(module):
+    owner = citizen_client(module)
+    other = citizen_client(module, 'other@example.test')
+    private_to_other = report(other, 'Чужая запись для фильтра')
+    for i in range(module.PER_PAGE + 1):
+        rid = report(owner, f'Своё обращение {i}')
+    post(owner, f'/report/{rid}/like')
+    post(admin_client(module), f'/report/{rid}/status', status='В работе', message='Ответ владельцу')
+    html = owner.get('/my', query_string={'status': 'В работе'}).get_data(as_text=True)
+    assert 'Найдено: 1' in html and 'Ответ владельцу' in html and 'like_btn liked' in html
+    assert 'Чужая запись для фильтра' not in html
+    assert 'Найдено: 0' in owner.get('/my', query_string={'q': 'Чужая'}).get_data(as_text=True)
+    with module.app.test_request_context('/my'):
+        module.app.preprocess_request()
+        with module.connect_db() as db:
+            uid = db.execute("SELECT id FROM users WHERE email='owner@example.test'").fetchone()['id']
+        rows, count, page, pages = module.fetch_reports('', '', '', 'old', 2, uid)
+        assert (len(rows), count, page, pages) == (1, module.PER_PAGE + 1, 2, 2)
+        assert module.fetch_stats(uid)['total'] == module.PER_PAGE + 1
+        assert all(row['ID'] != private_to_other for row in rows)
+    assert module.app.test_client().get('/my').status_code == 302
+
+
+def test_edit_schema_upgrade_keeps_existing_rows(module):
+    owner = citizen_client(module)
+    rid = report(owner, photo=True)
+    with module.connect_db() as db:
+        old = db.execute('SELECT * FROM report WHERE id=%s', (rid,)).fetchone()
+        db.execute('ALTER TABLE report DROP COLUMN updated_at, DROP COLUMN revision')
+    module.init_db()
+    module.init_db()
+    with module.connect_db() as db:
+        assert db.execute('SELECT * FROM report WHERE id=%s', (rid,)).fetchone() == old
+
+
+@pytest.mark.skipif(os.environ.get('TEST_DB_SERIAL') == '1', reason='Embedded test database has one connection')
+def test_concurrent_owner_edits_only_save_one_revision(module):
+    owner = citizen_client(module)
+    rid = report(owner)
+    token = csrf(owner)
+    cookie = owner.get_cookie('session').value
+    twins = [module.app.test_client(), module.app.test_client()]
+    for client in twins:
+        client.set_cookie('session', cookie)
+
+    def edit(item):
+        client, title = item
+        response = client.post(f'/report/{rid}/edit', data=dict(edited_data(title=title), csrf_token=token))
+        return response.status_code, title
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(edit, zip(twins, ('Первая вкладка', 'Вторая вкладка'))))
+    assert sorted(status for status, _ in results) == [302, 409]
+    saved_title = next(title for status, title in results if status == 302)
+    with module.connect_db() as db:
+        assert db.execute('SELECT title, revision FROM report WHERE id=%s', (rid,)).fetchone() == {'title': saved_title, 'revision': 1}

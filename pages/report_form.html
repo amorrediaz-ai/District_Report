@@ -1,22 +1,27 @@
 {% extends "base.html" %}
-{% block title %}Сообщить о проблеме — District Report{% endblock %}
+{% block title %}{{ 'Редактировать обращение' if editing else 'Сообщить о проблеме' }} — District Report{% endblock %}
 {% block content %}
 <section class="main_preview narrow">
     <div class="Report_header">
-        <h1>Сообщить о проблеме</h1>
-        <p>Опишите, что случилось и где. Обращение сразу появится в общем списке.</p>
+        <h1>{{ 'Редактировать обращение № ' ~ editing['ID'] if editing else 'Сообщить о проблеме' }}</h1>
+        <p>{{ 'Измените текст, место, категорию или фото. Статус устанавливает администратор.' if editing else 'Опишите, что случилось и где. Обращение сразу появится в общем списке.' }}</p>
     </div>
 
     {% if not g.user %}
     <div class="notice">Вы отправляете обращение анонимно. <a href="{{ url_for('login', next=request.path) }}">Войдите</a>, чтобы оно появилось в разделе «Мои обращения».</div>
     {% endif %}
 
-    <form method="post" class="card_form" enctype="multipart/form-data" novalidate>
+    <form method="post" class="card_form" id="report_editor" enctype="multipart/form-data" novalidate>
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% if editing %}<input type="hidden" name="revision" value="{{ revision if revision is not none else '' }}">{% endif %}
+        {% if errors.conflict %}
+        <div class="notice" role="alert">{{ errors.conflict }} <a href="{{ url_for('edit_report', report_id=editing['ID']) }}">Открыть актуальную версию</a></div>
+        {% endif %}
 
         <label class="field">
             <span>Заголовок</span>
-            <input type="text" name="title" value="{{ form.title }}" maxlength="100" placeholder="Например: Яма на дороге" required>
+            <input type="text" name="title" value="{{ form.title }}" minlength="3" maxlength="100" placeholder="Например: Яма на дороге" required>
+            <small class="input_count" data-count-for="title">{{ form.title|length }} / 100</small>
             {% if errors.title %}<small class="error">{{ errors.title }}</small>{% endif %}
         </label>
 
@@ -40,24 +45,32 @@
         <label class="field">
             <span>Описание</span>
             <textarea name="description" rows="6" maxlength="2000" placeholder="Что именно произошло, как давно, кого это затрагивает" required>{{ form.description }}</textarea>
+            <small class="input_count" data-count-for="description">{{ form.description|length }} / 2000</small>
             {% if errors.description %}<small class="error">{{ errors.description }}</small>{% endif %}
         </label>
 
         <div class="field photo_field">
             <span>Фото <em class="optional">(необязательно)</em></span>
-            <input type="file" name="photo" id="photo_input" accept="image/jpeg,image/png,image/webp,image/gif" data-max-mb="5" hidden>
+            {% if editing and editing['Photo'] %}
+            <a class="existing_photo" href="{{ url_for('uploaded_file', filename=editing['Photo']) }}" target="_blank" rel="noopener"><img src="{{ url_for('uploaded_file', filename=editing['Photo']) }}" alt="Текущее фото обращения"></a>
+            <label class="remove_photo_option"><input type="checkbox" name="remove_photo" value="1" {{ 'checked' if remove_photo }}> Удалить текущее фото</label>
+            <small>Если выбрать новое фото, оно заменит текущее.</small>
+            {% endif %}
+            <input type="file" name="photo" id="photo_input" accept="image/jpeg,image/png,image/webp,image/gif" data-max-mb="5">
             <label for="photo_input" class="photo_drop" id="photo_drop">
                 <img id="photo_preview" alt="" hidden>
                 <span id="photo_hint">📷 Нажмите, чтобы выбрать фото<small>JPG, PNG, WebP или GIF, до 5 МБ</small></span>
             </label>
             <button type="button" class="link_button photo_clear" id="photo_clear" hidden>Убрать фото</button>
-            <small class="error" id="photo_error">{{ errors.photo or '' }}</small>
+            <small class="error" id="photo_error" role="status">{{ errors.photo or '' }}</small>
+            {% if errors %}<small>Если вы выбирали новое фото, выберите его повторно перед сохранением.</small>{% endif %}
         </div>
 
         <div class="form_actions">
-            <button type="submit" class="report-btn">Отправить обращение</button>
-            <a href="{{ url_for('home') }}" class="reset_link">Отмена</a>
+            <button type="submit" class="report-btn">{{ 'Сохранить изменения' if editing else 'Отправить обращение' }}</button>
+            <a href="{{ url_for('report_detail', report_id=editing['ID']) if editing else url_for('home') }}" class="reset_link">Отмена</a>
         </div>
     </form>
 </section>
 {% endblock %}
+
