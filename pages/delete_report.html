@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Удалить обращение — District Report{% endblock %}
+{% block content %}
+<section class="main_preview narrow">
+    <div class="card_form delete_confirmation">
+        <h1>Удалить обращение № {{ report['ID'] }}?</h1>
+        <p class="delete_title">{{ report['Title'] }}</p>
+        <p>Обращение, фото, отметки поддержки и история ответов будут удалены. Восстановить их не получится.</p>
+        <form method="post" class="form_actions">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <a class="report-btn small" href="{{ url_for('report_detail', report_id=report['ID']) }}">Оставить обращение</a>
+            <button type="submit" class="danger_btn">Да, удалить</button>
+        </form>
+    </div>
+</section>
+{% endblock %}
