@@ -42,6 +42,20 @@
             {% if errors.location %}<small class="error">{{ errors.location }}</small>{% endif %}
         </label>
 
+        <fieldset class="map_field">
+            <legend>Место на карте <span class="optional">(необязательно)</span></legend>
+            <p>Нажмите на место проблемы. Метка будет видна всем. Адрес выше нужно заполнить отдельно.</p>
+            <div id="location_map" class="district_map" data-mode="edit" aria-label="Выбор места обращения на карте"></div>
+            <p id="map_feedback" class="history_hint" role="status">Можно выбрать место на карте или ввести координаты ниже.</p>
+            <div class="coordinate_fields">
+                <label class="field"><span>Широта</span><input id="latitude" name="latitude" type="number" step="any" min="-90" max="90" value="{{ form.latitude }}" placeholder="51.1282"></label>
+                <label class="field"><span>Долгота</span><input id="longitude" name="longitude" type="number" step="any" min="-180" max="180" value="{{ form.longitude }}" placeholder="71.4304"></label>
+            </div>
+            <button type="button" class="link_button" id="clear_location" hidden>Убрать метку</button>
+            {% if errors.coordinates %}<small class="error">{{ errors.coordinates }}</small>{% endif %}
+            <noscript><p>Введите координаты вручную или оставьте оба поля пустыми.</p></noscript>
+        </fieldset>
+
         <label class="field">
             <span>Описание</span>
             <textarea name="description" rows="6" maxlength="2000" placeholder="Что именно произошло, как давно, кого это затрагивает" required>{{ form.description }}</textarea>
@@ -50,18 +64,24 @@
         </label>
 
         <div class="field photo_field">
-            <span>Фото <em class="optional">(необязательно)</em></span>
-            {% if editing and editing['Photo'] %}
-            <a class="existing_photo" href="{{ url_for('uploaded_file', filename=editing['Photo']) }}" target="_blank" rel="noopener"><img src="{{ url_for('uploaded_file', filename=editing['Photo']) }}" alt="Текущее фото обращения"></a>
-            <label class="remove_photo_option"><input type="checkbox" name="remove_photo" value="1" {{ 'checked' if remove_photo }}> Удалить текущее фото</label>
-            <small>Если выбрать новое фото, оно заменит текущее.</small>
+            <span>Фотографии <em class="optional">(до 5, необязательно)</em></span>
+            {% if photos %}
+            <div class="photo_gallery existing_gallery">
+            {% for photo in photos %}
+                <div>
+                    <a href="{{ url_for('uploaded_file', filename=photo.name) }}" target="_blank" rel="noopener"><img src="{{ url_for('uploaded_file', filename=photo.name) }}" alt="Сохранённое фото {{ loop.index }}" loading="lazy"></a>
+                    <label class="remove_photo_option"><input type="checkbox" name="remove_photos" value="{{ photo.name }}" {{ 'checked' if photo.name in request.form.getlist('remove_photos') }}> Удалить фото {{ loop.index }}</label>
+                </div>
+            {% endfor %}
+            </div>
+            <small>Новые фото добавятся к сохранённым. Чтобы заменить фото, отметьте его для удаления и выберите новое.</small>
             {% endif %}
-            <input type="file" name="photo" id="photo_input" accept="image/jpeg,image/png,image/webp,image/gif" data-max-mb="5">
+            <input type="file" name="photos" id="photo_input" accept="image/jpeg,image/png,image/webp,image/gif" data-max-mb="5" data-max-photos="5" data-existing-count="{{ photos|length }}" multiple>
             <label for="photo_input" class="photo_drop" id="photo_drop">
-                <img id="photo_preview" alt="" hidden>
-                <span id="photo_hint">📷 Нажмите, чтобы выбрать фото<small>JPG, PNG, WebP или GIF, до 5 МБ</small></span>
+                <span id="photo_hint">📷 Выберите или перетащите фотографии<small>До 5 фото по 5 МБ каждое: JPG, PNG, WebP, GIF</small></span>
             </label>
-            <button type="button" class="link_button photo_clear" id="photo_clear" hidden>Убрать фото</button>
+            <div id="photo_preview" class="photo_gallery" hidden></div>
+            <button type="button" class="link_button photo_clear" id="photo_clear" hidden>Убрать выбранные фото</button>
             <small class="error" id="photo_error" role="status">{{ errors.photo or '' }}</small>
             {% if errors %}<small>Если вы выбирали новое фото, выберите его повторно перед сохранением.</small>{% endif %}
         </div>

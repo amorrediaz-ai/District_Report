@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Карта обращений — District Report{% endblock %}
+{% block content %}
+<section class="main_preview">
+    <div class="Report_header"><h1>Карта обращений</h1><p>Проблемы рядом с вами. Выберите метку, чтобы открыть обращение.</p></div>
+    <form class="filters" method="get">
+        <div class="toolbar"><div class="search-box"><input type="search" name="q" value="{{ q }}" placeholder="Найти обращение или адрес" aria-label="Поиск по карте"></div></div>
+        <div class="filter_row">
+            <select name="category" aria-label="Категория"><option value="">Все категории</option>{% for c in CATEGORIES %}<option value="{{ c }}" {{ 'selected' if c == category }}>{{ c }}</option>{% endfor %}</select>
+            <select name="status" aria-label="Статус"><option value="">Все статусы</option>{% for s in STATUSES %}<option value="{{ s }}" {{ 'selected' if s == status }}>{{ s }}</option>{% endfor %}</select>
+            <button type="submit" class="report-btn small">Показать</button>
+            {% if q or category or status %}<a href="{{ url_for('report_map') }}">Сбросить</a>{% endif %}
+        </div>
+    </form>
+    <div id="location_map" class="district_map map_overview" data-mode="overview" aria-label="Карта обращений жителей"></div>
+    <script id="map_pins" type="application/json">{{ pins|tojson }}</script>
+    <p id="map_feedback" class="history_hint" role="status">На карте: {{ pins|length }} из {{ total }} обращений с координатами.{% if total > 500 %} Показаны 500 последних. Уточните поиск.{% endif %}</p>
+    <p class="history_hint">Обращения без отметки на карте доступны <a href="{{ url_for('home', q=q, category=category, status=status) }}">в общем списке</a>.</p>
+    <details class="category_summary"><summary>Обращения на карте — список ссылок</summary>
+        <ul class="map_report_links">{% for pin in pins %}<li><a href="{{ pin.url }}">№ {{ pin.id }} · {{ pin.title }}</a> — {{ pin.status }}<small>{{ pin.location }}</small></li>{% else %}<li>Пока нет подходящих обращений с координатами. Место можно добавить при создании или редактировании своего обращения.</li>{% endfor %}</ul>
+    </details>
+</section>
+{% endblock %}

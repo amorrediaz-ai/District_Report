@@ -28,6 +28,7 @@ from database import connect_db, initialize_schema
 
 PER_PAGE = 8
 MAX_PHOTO_MB = 5
+MAX_PHOTOS = 5
 LOCAL_UTC_OFFSET = int(os.environ.get("LOCAL_UTC_OFFSET", "5"))  # Казахстан, UTC+5
 
 CATEGORIES = [
@@ -67,6 +68,7 @@ SELECT_REPORT = f"""
            {STATUS_SQL} AS "Status",
            {TYPE_SQL} AS type,
            r.created_at AS "Created_at", r.photo AS "Photo", r.updated_at, r.revision,
+           r.latitude, r.longitude,
            u.name AS "Author"
     FROM Report r
     LEFT JOIN Users u ON u.ID = r.User_id
@@ -79,7 +81,7 @@ if len(SECRET_KEY) < 32 or SECRET_KEY == "dev-secret-change-me":
 app = Flask(__name__, template_folder="pages")
 app.config.update(
     SECRET_KEY=SECRET_KEY,
-    MAX_CONTENT_LENGTH=(MAX_PHOTO_MB + 1) * 1024 * 1024,  # запас на остальные поля формы
+    MAX_CONTENT_LENGTH=(MAX_PHOTOS * MAX_PHOTO_MB + 1) * 1024 * 1024,
     PERMANENT_SESSION_LIFETIME=timedelta(days=365),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SECURE=os.environ.get("RENDER", "").lower() == "true",
@@ -256,6 +258,7 @@ def inject_globals():
         "STATUSES": STATUSES,
         "CATEGORIES": CATEGORIES,
         "page_url": page_url,
+        "unread_notifications": unread_notification_count() if g.user else 0,
     }
 
 
@@ -444,40 +447,106 @@ def validate_report_form(form):
     return errors
 
 
+def read_coordinates(form):
+    lat, lng = form.get("latitude", "").strip(), form.get("longitude", "").strip()
+    if not lat and not lng:
+        return None, None, None
+    try:
+        latitude, longitude = float(lat), float(lng)
+        if not (math.isfinite(latitude) and math.isfinite(longitude)
+                and -90 <= latitude <= 90 and -180 <= longitude <= 180):
+            raise ValueError
+    except ValueError:
+        return None, None, "Укажите обе координаты: широту от −90 до 90 и долготу от −180 до 180."
+    return latitude, longitude, None
+
+
+def read_photos():
+    legacy = [f for f in request.files.getlist("photo") if f.filename]
+    files = [f for f in request.files.getlist("photos") if f.filename]
+    if legacy and files:
+        return [], "Используйте одно поле загрузки фотографий."
+    files = files or legacy
+    if len(files) > MAX_PHOTOS:
+        return [], f"Можно прикрепить не более {MAX_PHOTOS} фотографий."
+    photos = []
+    for file in files:
+        photo, error = read_photo(file)
+        if error:
+            return [], error
+        if photo:
+            photos.append(photo)
+    return photos, None
+
+
+def report_photos(report_id, primary):
+    photos = [{"name": primary}] if primary else []
+    photos.extend(get_db().execute(
+        "SELECT name FROM report_photo WHERE report_id=%s ORDER BY id", (report_id,)
+    ).fetchall())
+    return photos
+
+
+def save_photo_plan(db, report_id, old_primary, photos):
+    """Keep the existing cover in report for compatibility; extras have their own rows."""
+    primary = photos[0] if photos else None
+    if (primary["name"] if primary else None) != old_primary:
+        if primary and "data" not in primary:
+            payload = db.execute(
+                "SELECT photo_data AS data, photo_mime AS mime FROM report_photo WHERE report_id=%s AND name=%s",
+                (report_id, primary["name"]),
+            ).fetchone()
+            primary = dict(primary, **payload)
+        db.execute("UPDATE report SET photo=%s, photo_data=%s, photo_mime=%s WHERE id=%s",
+                   (primary["name"] if primary else None, primary["data"] if primary else None,
+                    primary["mime"] if primary else None, report_id))
+    names = [p["name"] for p in photos[1:]]
+    db.execute("DELETE FROM report_photo WHERE report_id=%s AND NOT (name = ANY(%s))", (report_id, names))
+    for photo in photos[1:]:
+        if "data" in photo:
+            db.execute("INSERT INTO report_photo(report_id,name,photo_data,photo_mime) VALUES (%s,%s,%s,%s)",
+                       (report_id, photo["name"], photo["data"], photo["mime"]))
+
+
 @app.route("/report/new", methods=["GET", "POST"])
 def new_report():
-    form = {"title": "", "location": "", "category": "", "description": ""}
+    form = {"title": "", "location": "", "category": "", "description": "", "latitude": "", "longitude": ""}
     errors: dict[str, str] = {}
 
     if request.method == "POST":
         form = {k: request.form.get(k, "").strip() for k in form}
         errors = validate_report_form(form)
+        latitude, longitude, coordinate_error = read_coordinates(form)
+        if coordinate_error:
+            errors["coordinates"] = coordinate_error
 
-        photo = None
+        photos = []
         if not errors:
-            photo, photo_error = read_photo(request.files.get("photo"))
+            photos, photo_error = read_photos()
             if photo_error:
                 errors["photo"] = photo_error
 
         if not errors:
+            photo = photos[0] if photos else None
             db = get_db()
             with db.transaction():
                 row = db.execute(
                     """INSERT INTO report
                        (title, location, description, user_id, status, type,
-                        photo, photo_data, photo_mime)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        photo, photo_data, photo_mime, latitude, longitude)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                        RETURNING id""",
                     (form["title"], form["location"], form["description"],
                      g.user["ID"] if g.user else None, DEFAULT_STATUS, form["category"],
                      photo["name"] if photo else None,
                      photo["data"] if photo else None,
-                     photo["mime"] if photo else None),
+                     photo["mime"] if photo else None, latitude, longitude),
                 ).fetchone()
+                save_photo_plan(db, row["id"], photo["name"] if photo else None, photos)
             flash("Спасибо! Обращение отправлено и появилось в списке.", "success")
             return redirect(url_for("report_detail", report_id=row["id"]))
 
-    return render_template("report_form.html", form=form, errors=errors)
+    return render_template("report_form.html", form=form, errors=errors, map_enabled=True, photos=[])
 
 
 @app.route("/report/<int:report_id>/edit", methods=["GET", "POST"])
@@ -487,23 +556,29 @@ def edit_report(report_id):
     if report["User_id"] != g.user["ID"]:
         abort(403)
     form = {"title": report["Title"] or "", "location": report["Location"] or "",
-            "description": report["Description"] or "", "category": report["type"]}
+            "description": report["Description"] or "", "category": report["type"],
+            "latitude": str(report["latitude"]) if report["latitude"] is not None else "",
+            "longitude": str(report["longitude"]) if report["longitude"] is not None else ""}
     errors = {}
     revision = request.form.get("revision", type=int) if request.method == "POST" else report["revision"]
     remove_photo = request.form.get("remove_photo") == "1"
     if request.method == "POST":
-        form = {key: request.form.get(key, "").strip() for key in form}
+        # Older forms without coordinate fields preserve the existing location pin.
+        form = {key: request.form.get(key, form[key] if key in ("latitude", "longitude") else "").strip() for key in form}
         errors = validate_report_form(form)
-        photo = None
+        latitude, longitude, coordinate_error = read_coordinates(form)
+        if coordinate_error:
+            errors["coordinates"] = coordinate_error
+        uploads = []
         if not errors:
-            photo, photo_error = read_photo(request.files.get("photo"))
+            uploads, photo_error = read_photos()
             if photo_error:
                 errors["photo"] = photo_error
         if not errors:
             db = get_db()
             with db.transaction():
                 current = db.execute(
-                    "SELECT user_id, revision FROM report WHERE id=%s FOR UPDATE", (report_id,)
+                    "SELECT user_id, revision, photo FROM report WHERE id=%s FOR UPDATE", (report_id,)
                 ).fetchone()
                 if current is None:
                     abort(404)
@@ -511,24 +586,30 @@ def edit_report(report_id):
                     abort(403)
                 if revision is None or revision != current["revision"]:
                     errors["conflict"] = "Обращение уже изменено в другой вкладке. Скопируйте свой текст и откройте актуальную версию перед повторным редактированием."
-                else:
+                existing = report_photos(report_id, current["photo"])
+                removed = set(request.form.getlist("remove_photos"))
+                if not removed.issubset({p["name"] for p in existing}):
+                    abort(400, "Фотография не принадлежит этому обращению.")
+                legacy_replace = bool(uploads and request.files.get("photo"))
+                if (remove_photo or legacy_replace) and current["photo"]:
+                    removed.add(current["photo"])
+                kept = [p for p in existing if p["name"] not in removed]
+                planned = uploads + kept if legacy_replace else kept + uploads
+                if len(planned) > MAX_PHOTOS:
+                    errors["photo"] = f"Не более {MAX_PHOTOS} фотографий в обращении. Уберите лишние или отметьте старые для удаления."
+                if not errors:
                     db.execute(
                         """UPDATE report SET title=%s, location=%s, type=%s, description=%s,
-                           updated_at=CURRENT_TIMESTAMP, revision=revision+1 WHERE id=%s""",
-                        (form["title"], form["location"], form["category"], form["description"], report_id),
+                           latitude=%s, longitude=%s, updated_at=CURRENT_TIMESTAMP, revision=revision+1 WHERE id=%s""",
+                        (form["title"], form["location"], form["category"], form["description"], latitude, longitude, report_id),
                     )
-                    # A selected replacement takes precedence over removal. Otherwise preserve the photo.
-                    if photo or remove_photo:
-                        db.execute(
-                            "UPDATE report SET photo=%s, photo_data=%s, photo_mime=%s WHERE id=%s",
-                            (photo["name"] if photo else None, photo["data"] if photo else None,
-                             photo["mime"] if photo else None, report_id),
-                        )
+                    save_photo_plan(db, report_id, current["photo"], planned)
             if not errors:
                 flash("Ваше обращение обновлено.", "success")
                 return redirect(url_for("report_detail", report_id=report_id))
     return render_template("report_form.html", form=form, errors=errors, editing=report,
-                           revision=revision, remove_photo=remove_photo), (409 if errors.get("conflict") else 200)
+                           revision=revision, remove_photo=remove_photo, map_enabled=True,
+                           photos=report_photos(report_id, report["Photo"])), (409 if errors.get("conflict") else 200)
 
 
 @app.route("/report/<int:report_id>")
@@ -538,7 +619,9 @@ def report_detail(report_id: int):
         "SELECT old_status, new_status, message, created_at FROM report_update "
         "WHERE report_id = %s ORDER BY id", (report_id,),
     ).fetchall()
-    return render_template("report_detail.html", report=report, updates=updates)
+    return render_template("report_detail.html", report=report, updates=updates,
+                           photos=report_photos(report_id, report["Photo"]),
+                           map_enabled=report["latitude"] is not None and report["longitude"] is not None)
 
 
 @app.post("/report/<int:report_id>/like")
@@ -580,7 +663,7 @@ def change_status(report_id: int):
     db = get_db()
     with db.transaction():
         row = db.execute(
-            f'SELECT {STATUS_SQL} AS status FROM report r WHERE id = %s FOR UPDATE',
+            f'SELECT {STATUS_SQL} AS status, user_id FROM report r WHERE id = %s FOR UPDATE',
             (report_id,),
         ).fetchone()
         if row is None:
@@ -590,11 +673,14 @@ def change_status(report_id: int):
             flash("Изменений нет. Выберите другой статус или напишите ответ.", "info")
         else:
             db.execute("UPDATE report SET status = %s WHERE id = %s", (status, report_id))
-            db.execute(
+            update = db.execute(
                 """INSERT INTO report_update (report_id, actor_id, old_status, new_status, message)
-                   VALUES (%s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s, %s) RETURNING id""",
                 (report_id, g.user["ID"], row["status"], status, message),
-            )
+            ).fetchone()
+            if row["user_id"] and row["user_id"] != g.user["ID"]:
+                db.execute("INSERT INTO notification(user_id,update_id) VALUES (%s,%s)",
+                           (row["user_id"], update["id"]))
             flash("Изменения опубликованы в истории обращения.", "success")
     return redirect(url_for("report_detail", report_id=report_id))
 
@@ -625,7 +711,8 @@ def uploaded_file(filename: str):
     if Path(filename).name != filename:
         abort(404)
     photo = get_db().execute(
-        "SELECT photo_data, photo_mime FROM report WHERE photo = %s", (filename,)
+        """SELECT photo_data, photo_mime FROM report WHERE photo = %s
+           UNION ALL SELECT photo_data, photo_mime FROM report_photo WHERE name = %s LIMIT 1""", (filename, filename)
     ).fetchone()
     if photo is None:
         abort(404)
@@ -637,6 +724,73 @@ def uploaded_file(filename: str):
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+def unread_notification_count():
+    return get_db().execute(
+        "SELECT COUNT(*) AS n FROM notification WHERE user_id=%s AND read_at IS NULL", (g.user["ID"],)
+    ).fetchone()["n"]
+
+
+@app.get("/notifications")
+@login_required
+def notifications():
+    only_unread = request.args.get("unread") == "1"
+    where = "n.user_id=%s" + (" AND n.read_at IS NULL" if only_unread else "")
+    total = get_db().execute(f"SELECT COUNT(*) AS n FROM notification n WHERE {where}", (g.user["ID"],)).fetchone()["n"]
+    pages = max(1, math.ceil(total / 20))
+    page = min(max(request.args.get("page", 1, type=int), 1), pages)
+    items = get_db().execute(
+        f"""SELECT n.id, n.read_at, u.report_id, u.old_status, u.new_status, u.message, u.created_at, r.title
+            FROM notification n JOIN report_update u ON u.id=n.update_id JOIN report r ON r.id=u.report_id
+            WHERE {where} ORDER BY n.id DESC LIMIT 20 OFFSET %s""", (g.user["ID"], (page-1)*20)
+    ).fetchall()
+    response = app.make_response(render_template("notifications.html", items=items, only_unread=only_unread,
+                                                total=total, page=page, pages=pages))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/notifications/count")
+def notification_count():
+    if not g.user:
+        return jsonify(error="Нужно войти в аккаунт."), 401
+    response = jsonify(unread=unread_notification_count())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.post("/notifications/<int:notification_id>/open")
+@login_required
+def open_notification(notification_id):
+    row = get_db().execute(
+        """UPDATE notification n SET read_at=COALESCE(n.read_at,CURRENT_TIMESTAMP)
+           FROM report_update u WHERE n.update_id=u.id AND n.id=%s AND n.user_id=%s
+           RETURNING u.report_id""", (notification_id, g.user["ID"])
+    ).fetchone()
+    if row is None:
+        abort(404)
+    return redirect(url_for("report_detail", report_id=row["report_id"]))
+
+
+@app.post("/notifications/read-all")
+@login_required
+def read_all_notifications():
+    get_db().execute("UPDATE notification SET read_at=CURRENT_TIMESTAMP WHERE user_id=%s AND read_at IS NULL",
+                     (g.user["ID"],))
+    return redirect(url_for("notifications"))
+
+
+@app.get("/map")
+def report_map():
+    q, category, status, _, _ = read_filters()
+    where, params = report_filters(q, category, status)
+    coordinate_where = where + (" AND " if where else "WHERE ") + "r.latitude IS NOT NULL AND r.longitude IS NOT NULL"
+    total = get_db().execute(f"SELECT COUNT(*) AS n FROM report r {coordinate_where}", params).fetchone()["n"]
+    rows = get_db().execute(f"{SELECT_REPORT} {coordinate_where} ORDER BY r.id DESC LIMIT 500", params).fetchall()
+    pins = [dict(id=r["ID"], title=r["Title"], location=r["Location"], status=r["Status"],
+                 latitude=r["latitude"], longitude=r["longitude"], url=url_for("report_detail", report_id=r["ID"])) for r in rows]
+    return render_template("map.html", q=q, category=category, status=status, pins=pins, total=total, map_enabled=True)
 
 
 @app.route("/how-it-works")
@@ -745,7 +899,7 @@ def http_error(err):
         400: err.description if getattr(err, "description", None) else "Некорректный запрос.",
         403: "У вас нет доступа к этой странице.",
         404: "Такой страницы не существует.",
-        413: f"Файл слишком большой. Максимальный размер фото — {MAX_PHOTO_MB} МБ.",
+        413: f"Загрузка слишком большая. До {MAX_PHOTOS} фото по {MAX_PHOTO_MB} МБ каждое.",
     }
     if request.path.endswith("/like"):
         return jsonify(error=messages[err.code]), err.code

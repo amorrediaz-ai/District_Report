@@ -326,6 +326,7 @@ def test_schema_upgrade_preserves_existing_records_and_is_repeatable(module):
         original = conn.execute("SELECT * FROM report WHERE id=%s", (rid,)).fetchone()
         users = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
         # Simulate the schema that existed before this feature.
+        conn.execute("DROP TABLE notification")
         conn.execute("DROP TABLE report_update")
     module.init_db()
     module.init_db()
@@ -581,3 +582,158 @@ def test_concurrent_owner_edits_only_save_one_revision(module):
     saved_title = next(title for status, title in results if status == 302)
     with module.connect_db() as db:
         assert db.execute('SELECT title, revision FROM report WHERE id=%s', (rid,)).fetchone() == {'title': saved_title, 'revision': 1}
+
+
+def photo_uploads(n):
+    return [(io.BytesIO(PNG), f'photo-{i}.png') for i in range(n)]
+
+
+def gallery_names(module, rid):
+    with module.connect_db() as db:
+        primary = db.execute('SELECT photo FROM report WHERE id=%s', (rid,)).fetchone()['photo']
+        return ([primary] if primary else []) + [r['name'] for r in db.execute('SELECT name FROM report_photo WHERE report_id=%s ORDER BY id', (rid,))]
+
+
+def test_gallery_add_remove_promote_and_persist(module):
+    owner = citizen_client(module)
+    created = post(owner, '/report/new', **edited_data(photos=photo_uploads(3)))
+    assert created.status_code == 302
+    rid = int(created.location.rsplit('/', 1)[1])
+    names = gallery_names(module, rid)
+    assert len(names) == 3 and len(set(names)) == 3
+    for name in names:
+        assert owner.get('/uploads/' + name).data == PNG
+    path = f'/report/{rid}/edit'
+    assert post(owner, path, **edited_data(remove_photos=[names[0]], photos=photo_uploads(2))).status_code == 302
+    new_names = gallery_names(module, rid)
+    assert len(new_names) == 4 and new_names[0] == names[1]
+    assert owner.get('/uploads/' + names[0]).status_code == 404
+    # Text-only edits keep all photos and their URLs.
+    assert post(owner, path, **edited_data(revision='1')).status_code == 302
+    assert gallery_names(module, rid) == new_names
+    code = 'import app; c=app.app.test_client(); ' + '; '.join(f"assert c.get('/uploads/{name}').data == {PNG!r}" for name in new_names)
+    result = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert post(owner, path, **edited_data(revision='2', remove_photos=new_names)).status_code == 302
+    assert gallery_names(module, rid) == []
+    for name in new_names:
+        assert owner.get('/uploads/' + name).status_code == 404
+
+
+def test_gallery_limits_bad_uploads_and_foreign_removal_are_atomic(module):
+    owner = citizen_client(module)
+    created = post(owner, '/report/new', **edited_data(photos=photo_uploads(5)))
+    assert created.status_code == 302
+    rid = int(created.location.rsplit('/', 1)[1])
+    names = gallery_names(module, rid)
+    path = f'/report/{rid}/edit'
+    for data in (edited_data(photos=photo_uploads(1)),
+                 edited_data(remove_photos=[names[0]], photos=[(io.BytesIO(b'bad'), 'bad.png')])):
+        response = post(owner, path, **data)
+        assert response.status_code == 200
+        assert gallery_names(module, rid) == names
+    assert post(owner, path, **edited_data(remove_photos=['foreign-photo.png'])).status_code == 400
+    assert post(owner, '/report/new', **edited_data(photos=photo_uploads(6))).status_code == 200
+    with module.connect_db() as db:
+        row = db.execute('SELECT revision FROM report WHERE id=%s', (rid,)).fetchone()
+        assert row['revision'] == 0
+        assert db.execute('SELECT COUNT(*) AS n FROM report').fetchone()['n'] == 1
+    post(owner, f'/report/{rid}/delete')
+    with module.connect_db() as db:
+        assert db.execute('SELECT COUNT(*) AS n FROM report_photo').fetchone()['n'] == 0
+
+
+def test_coordinates_validation_edit_and_map_filters(module):
+    import json
+    import re
+    owner = citizen_client(module)
+    for lat, lng in [('NaN','71'), ('Infinity','71'), ('91','71'), ('51','181'), ('51',''), ('','71'), ('text','71')]:
+        assert post(owner, '/report/new', **edited_data(latitude=lat, longitude=lng)).status_code == 200
+    with module.connect_db() as db:
+        assert db.execute('SELECT COUNT(*) AS n FROM report').fetchone()['n'] == 0
+    created = post(owner, '/report/new', **edited_data(title='<script>alert(1)</script>', latitude='51.1282', longitude='71.4304'))
+    rid = int(created.location.rsplit('/',1)[1])
+    report(owner, 'Без координат')
+    html = owner.get('/map', query_string={'category': 'Освещение'}).get_data(as_text=True)
+    pins = json.loads(re.search(r'<script id="map_pins" type="application/json">(.*?)</script>', html, re.S).group(1))
+    assert len(pins) == 1 and pins[0]['id'] == rid
+    assert pins[0]['latitude'] == 51.1282 and '<script>alert(1)</script>' not in html
+    assert 'owner@example.test' not in html and 'Без координат' not in html
+    assert 'location_map' in owner.get(f'/report/{rid}').get_data(as_text=True)
+    # Old forms retain coordinates; explicit empty fields remove the pin.
+    assert post(owner, f'/report/{rid}/edit', **edited_data()).status_code == 302
+    with module.connect_db() as db:
+        assert db.execute('SELECT latitude FROM report WHERE id=%s', (rid,)).fetchone()['latitude'] == 51.1282
+    assert post(owner, f'/report/{rid}/edit', **edited_data(revision='1', latitude='', longitude='')).status_code == 302
+    with module.connect_db() as db:
+        assert db.execute('SELECT latitude, longitude FROM report WHERE id=%s', (rid,)).fetchone() == {'latitude': None, 'longitude': None}
+    assert 'На карте: 0 из 0' in owner.get('/map').get_data(as_text=True)
+
+
+def test_notifications_private_read_state_and_cascade(module):
+    owner = citizen_client(module)
+    other = citizen_client(module, 'second@example.test')
+    visitor = module.app.test_client()
+    admin = admin_client(module)
+    rid = report(owner)
+    other_rid = report(other)
+    post(admin, f'/report/{rid}/status', status='В работе', message='Ответ первому жителю')
+    post(admin, f'/report/{other_rid}/status', status='В работе', message='Ответ второму жителю')
+    assert owner.get('/notifications/count').json == {'unread': 1}
+    assert visitor.get('/notifications/count').status_code == 401
+    assert visitor.get('/notifications').status_code == 302
+    html = owner.get('/notifications').get_data(as_text=True)
+    assert 'Ответ первому жителю' in html and 'Ответ второму жителю' not in html
+    assert owner.get('/notifications/count').json['unread'] == 1  # GET never marks as read.
+    with module.connect_db() as db:
+        nid = db.execute('SELECT n.id FROM notification n JOIN report_update u ON u.id=n.update_id WHERE u.report_id=%s', (rid,)).fetchone()['id']
+    assert post(other, f'/notifications/{nid}/open').status_code == 404
+    assert owner.post(f'/notifications/{nid}/open').status_code == 400
+    assert post(owner, f'/notifications/{nid}/open').location.endswith(f'/report/{rid}')
+    assert owner.get('/notifications/count').json['unread'] == 0
+    assert other.get('/notifications/count').json['unread'] == 1
+    post(admin, f'/report/{rid}/status', status='В работе')  # no-op
+    assert owner.get('/notifications/count').json['unread'] == 0
+    post(admin, f'/report/{rid}/status', status='В работе', message='<script>reply</script>')
+    assert owner.get('/notifications/count').json['unread'] == 1
+    assert '&lt;script&gt;reply&lt;/script&gt;' in owner.get('/notifications').get_data(as_text=True)
+    post(owner, '/notifications/read-all')
+    assert owner.get('/notifications/count').json['unread'] == 0
+    assert other.get('/notifications/count').json['unread'] == 1
+    post(owner, f'/report/{rid}/delete')
+    with module.connect_db() as db:
+        assert db.execute('SELECT COUNT(*) AS n FROM notification').fetchone()['n'] == 1
+
+
+def test_notification_error_rolls_back_status_and_history(module):
+    owner = citizen_client(module)
+    rid = report(owner)
+    admin = admin_client(module)
+    with module.connect_db() as db:
+        db.execute('ALTER TABLE notification ADD CONSTRAINT test_reject CHECK (user_id < 0)')
+    try:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            post(admin, f'/report/{rid}/status', status='Решено', message='Готово')
+        with module.connect_db() as db:
+            assert db.execute('SELECT status FROM report WHERE id=%s', (rid,)).fetchone()['status'] == 'На рассмотрении'
+            assert db.execute('SELECT COUNT(*) AS n FROM report_update').fetchone()['n'] == 0
+    finally:
+        with module.connect_db() as db:
+            db.execute('ALTER TABLE notification DROP CONSTRAINT test_reject')
+
+
+def test_feature_schema_upgrade_preserves_legacy_photo(module):
+    owner = citizen_client(module)
+    rid = report(owner, photo=True)
+    with module.connect_db() as db:
+        old = db.execute('SELECT * FROM report WHERE id=%s', (rid,)).fetchone()
+        db.execute('DROP TABLE report_photo')
+        db.execute('DROP TABLE notification')
+        db.execute('ALTER TABLE report DROP COLUMN latitude, DROP COLUMN longitude')
+    module.init_db()
+    module.init_db()
+    with module.connect_db() as db:
+        assert db.execute('SELECT * FROM report WHERE id=%s', (rid,)).fetchone() == old
+    assert owner.get('/uploads/' + old['photo']).data == PNG
+    assert owner.get(f'/report/{rid}').status_code == 200
+    assert owner.get('/notifications/count').json == {'unread': 0}
