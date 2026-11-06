@@ -12,41 +12,7 @@
 <body>
 
 <div class="page_container">
-    <header class="header">
-
-        <div class="head_logo">
-            <a href="{{ url_for('home') }}">
-                <img src="{{ url_for('static', filename='svg/logo.svg') }}" alt="">
-                <span>District Report</span>
-            </a>
-        </div>
-
-        <nav class="navigation_bar">
-            <a href="{{ url_for('home') }}" class="{{ 'active' if request.endpoint in ('home', 'report_detail') }}">Обращения</a>
-            <a href="{{ url_for('report_map') }}" class="{{ 'active' if request.endpoint == 'report_map' }}">Карта</a>
-            <a href="{{ url_for('how_it_works') }}" class="{{ 'active' if request.endpoint == 'how_it_works' }}">Как это работает</a>
-            {% if g.user %}
-            <a href="{{ url_for('my_reports') }}" class="{{ 'active' if request.endpoint == 'my_reports' }}">Мои обращения</a>
-            <a href="{{ url_for('notifications') }}" class="{{ 'active' if request.endpoint == 'notifications' }}">Уведомления <span class="notification_badge" id="notification_count" data-url="{{ url_for('notification_count') }}" aria-label="Непрочитанных: {{ unread_notifications }}" {{ 'hidden' if not unread_notifications }}>{{ unread_notifications }}</span></a>
-            {% endif %}
-            {% if g.user and g.user['Is_admin'] %}
-            <a href="{{ url_for('admin_dashboard') }}" class="{{ 'active' if request.endpoint == 'admin_dashboard' }}">Управление</a>
-            {% endif %}
-        </nav>
-
-        <div class="login">
-            {% if g.user %}
-                <span class="user_name">{{ g.user['Name'] }}{% if g.user['Is_admin'] %} <em class="admin_badge">админ</em>{% endif %}</span>
-                <form method="post" action="{{ url_for('logout') }}" class="inline_form">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <button type="submit" class="link_button">Выйти</button>
-                </form>
-            {% else %}
-                <a href="{{ url_for('login') }}">Войти</a>
-            {% endif %}
-            <a id="report_problem" href="{{ url_for('new_report') }}">Сообщить о проблеме</a>
-        </div>
-    </header>
+    {% include '_header.html' %}
 
     {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
