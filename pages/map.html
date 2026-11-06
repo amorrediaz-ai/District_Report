@@ -2,7 +2,7 @@
 {% block title %}Карта обращений — District Report{% endblock %}
 {% block content %}
 <section class="main_preview">
-    <div class="Report_header"><h1>Карта обращений</h1><p>Проблемы рядом с вами. Выберите метку, чтобы открыть обращение.</p></div>
+    <div class="Report_header"><h1>Карта обращений</h1><p>Астана · Выберите метку, чтобы увидеть адрес, статус и само обращение.</p></div>
     <form class="filters" method="get">
         <div class="toolbar"><div class="search-box"><input type="search" name="q" value="{{ q }}" placeholder="Найти обращение или адрес" aria-label="Поиск по карте"></div></div>
         <div class="filter_row">
@@ -12,11 +12,20 @@
             {% if q or category or status %}<a href="{{ url_for('report_map') }}">Сбросить</a>{% endif %}
         </div>
     </form>
-    <div id="location_map" class="district_map map_overview" data-mode="overview" aria-label="Карта обращений жителей"></div>
+    <div class="map-tools">
+        <p id="map_feedback" role="status">{% if pins %}Обращений на карте: <strong>{{ pins|length }}</strong>{% if total > 500 %} из {{ total }}. Показаны 500 последних{% endif %}.{% elif q or category or status %}По этим фильтрам обращений с меткой нет.{% else %}Пока нет обращений с отметкой на карте.{% endif %}</p>
+        <button type="button" class="map-reset" hidden>Вернуть исходный вид</button>
+    </div>
+    <div id="location_map" class="district_map map_overview" data-mode="overview" aria-label="Карта обращений жителей Астаны"></div>
+    <p id="map_warning" class="map-warning" role="status" hidden></p>
     <script id="map_pins" type="application/json">{{ pins|tojson }}</script>
-    <p id="map_feedback" class="history_hint" role="status">На карте: {{ pins|length }} из {{ total }} обращений с координатами.{% if total > 500 %} Показаны 500 последних. Уточните поиск.{% endif %}</p>
+    {% if pins %}
+    <ul class="map-key" aria-label="Обозначения на карте">{% for label, key in STATUSES.items() %}
+        <li><span class="pin-face pin-{{ key }}" aria-hidden="true"></span>{{ label }}</li>{% endfor %}
+    </ul>
+    {% endif %}
     <p class="history_hint">Обращения без отметки на карте доступны <a href="{{ url_for('home', q=q, category=category, status=status) }}">в общем списке</a>.</p>
-    <details class="category_summary"><summary>Обращения на карте — список ссылок</summary>
+    <details class="category_summary"><summary>Список обращений с адресами ({{ pins|length }})</summary>
         <ul class="map_report_links">{% for pin in pins %}<li><a href="{{ pin.url }}">№ {{ pin.id }} · {{ pin.title }}</a> — {{ pin.status }}<small>{{ pin.location }}</small></li>{% else %}<li>Пока нет подходящих обращений с координатами. Место можно добавить при создании или редактировании своего обращения.</li>{% endfor %}</ul>
     </details>
 </section>

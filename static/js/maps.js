@@ -1,69 +1,130 @@
 (function () {
   "use strict";
-  var element = document.getElementById("location_map");
+  const element = document.getElementById("location_map");
   if (!element) return;
-  var feedback = document.getElementById("map_feedback"), mode = element.dataset.mode;
+  const mode = element.dataset.mode;
+  const warning = document.getElementById("map_warning");
+  function warn(message) {
+    warning.textContent = message;
+    warning.hidden = false;
+  }
   if (!window.L) {
-    feedback.textContent += " Карта не загрузилась. Используйте координаты или список обращений ниже.";
+    const fallback = {overview: "Откройте список адресов под картой.", edit: "Можно ввести координаты вручную.", detail: "Координаты указаны ниже."};
+    warn("Не удалось загрузить карту. " + fallback[mode]);
     return;
   }
-  var map = L.map(element, {scrollWheelZoom: false}).setView([51.1282, 71.4304], 12);
+
+  const city = [51.1282, 71.4304];
+  const map = L.map(element, {scrollWheelZoom: false, zoomControl: false}).setView(city, 12);
+  L.control.zoom({zoomInTitle: "Приблизить", zoomOutTitle: "Отдалить"}).addTo(map);
+  L.control.scale({imperial: false}).addTo(map);
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-  }).addTo(map).on("tileerror", function () {
-    feedback.textContent = "Не удалось загрузить фон карты. Координаты и ссылки на обращения остаются доступны.";
-  });
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  }).addTo(map).on("tileerror", () => warn("Не удалось загрузить часть карты улиц."))
+    .on("load", function () {
+      const visibleTiles = this.getContainer().querySelectorAll("img.leaflet-tile");
+      if (visibleTiles.length && Array.from(visibleTiles).every(tile => tile.naturalWidth > 0)) warning.hidden = true;
+    });
+
   function point(lat, lng) {
-    if (lat === "" || lng === "") return null;
-    lat = Number(lat); lng = Number(lng);
+    if (lat == null || lng == null || lat === "" || lng === "") return null;
+    lat = Number(lat);
+    lng = Number(lng);
     return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? [lat, lng] : null;
   }
-  function dot(position, status) {
-    var colors = {"На рассмотрении": "#9b6a14", "В работе": "#256ca0", "Решено": "#35734b", "Отклонено": "#ad4141"};
-    return L.circleMarker(position, {radius: 9, weight: 3, color: "#fff", fillColor: colors[status] || "#35734b", fillOpacity: 1}).addTo(map);
+  function icon(kind, count) {
+    const face = document.createElement("span");
+    face.className = "pin-face pin-" + kind;
+    face.setAttribute("aria-hidden", "true");
+    if (count) face.textContent = String(count);
+    return L.divIcon({className: "report-pin", html: face, iconSize: [44, 44], iconAnchor: [22, 35], popupAnchor: [0, -28]});
   }
-  if (mode === "edit") {
-    var latitude = document.getElementById("latitude"), longitude = document.getElementById("longitude"), marker;
-    var clear = document.getElementById("clear_location"); clear.hidden = false;
-    function refresh(recenter) {
-      var position = point(latitude.value, longitude.value);
-      if (marker) { map.removeLayer(marker); marker = null; }
-      if (position) {
-        marker = dot(position);
-        if (recenter) map.setView(position, 15);
-        feedback.textContent = "Выбрано: " + position[0].toFixed(6) + ", " + position[1].toFixed(6);
-      } else { feedback.textContent = "Метка не выбрана. Нажмите на карту или заполните обе координаты."; }
+  function popup(reports) {
+    const panel = document.createElement("div");
+    panel.className = "map-popup";
+    reports.forEach(report => {
+      const item = document.createElement("article");
+      const link = document.createElement("a");
+      link.href = report.url;
+      link.textContent = "№ " + report.id + " · " + report.title;
+      const address = document.createElement("p");
+      address.textContent = report.location;
+      const status = document.createElement("strong");
+      status.textContent = report.status;
+      item.append(link, address, status);
+      panel.append(item);
+    });
+    return panel;
+  }
+
+  if (mode === "overview") {
+    const locations = new Map();
+    for (const report of JSON.parse(document.getElementById("map_pins").textContent)) {
+      const position = point(report.latitude, report.longitude);
+      if (!position) continue;
+      const key = position.join(",");
+      if (!locations.has(key)) locations.set(key, {position, reports: []});
+      locations.get(key).reports.push(report);
     }
-    map.on("click", function (event) {
-      latitude.value = event.latlng.lat.toFixed(6);
-      longitude.value = (((event.latlng.lng + 180) % 360 + 360) % 360 - 180).toFixed(6);
-      latitude.dispatchEvent(new Event("input", {bubbles: true}));
-      longitude.dispatchEvent(new Event("input", {bubbles: true}));
-      refresh(false);
-    });
-    [latitude, longitude].forEach(function (field) { field.addEventListener("change", function () { refresh(true); }); });
-    clear.addEventListener("click", function () {
-      latitude.value = ""; longitude.value = "";
-      latitude.dispatchEvent(new Event("input", {bubbles: true})); refresh(false);
-    });
-    refresh(true);
-  } else if (mode === "detail") {
-    var position = point(element.dataset.latitude, element.dataset.longitude);
-    if (position) { dot(position); map.setView(position, 15); }
-  } else {
-    var pins = JSON.parse(document.getElementById("map_pins").textContent), bounds = [];
-    pins.forEach(function (pin) {
-      var position = point(pin.latitude, pin.longitude);
-      if (!position) return;
+    const bounds = [];
+    for (const {position, reports} of locations.values()) {
+      const multiple = reports.length > 1;
+      const title = multiple ? "Обращений в этой точке: " + reports.length : reports[0].title + " — " + reports[0].status;
+      const pin = L.marker(position, {title, icon: multiple ? icon("group", reports.length) : icon(reports[0].status_key)});
+      pin.addTo(map).bindPopup(() => popup(reports), {maxHeight: 220});
+      pin.getElement().setAttribute("aria-label", title);
       bounds.push(position);
-      // User text is always textContent, never popup HTML.
-      var content = document.createElement("div"), link = document.createElement("a"), status = document.createElement("p"), address = document.createElement("p");
-      link.href = pin.url; link.textContent = "№ " + pin.id + " · " + pin.title;
-      status.textContent = pin.status; address.textContent = pin.location;
-      content.append(link, status, address);
-      dot(position, pin.status).bindPopup(content);
-    });
-    if (bounds.length) map.fitBounds(bounds, {padding: [25, 25], maxZoom: 15});
+    }
+    function resetView() {
+      map.closePopup();
+      if (bounds.length) map.fitBounds(bounds, {padding: [30, 42], maxZoom: 16});
+      else map.setView(city, 12);
+    }
+    const reset = document.querySelector(".map-tools .map-reset");
+    reset.hidden = false;
+    reset.addEventListener("click", resetView);
+    resetView();
+    return;
   }
+  if (mode === "detail") {
+    const position = point(element.dataset.latitude, element.dataset.longitude);
+    if (position) {
+      L.marker(position, {icon: icon("place"), interactive: false, keyboard: false}).addTo(map);
+      map.setView(position, 16);
+    }
+    return;
+  }
+
+  const latitude = document.getElementById("latitude");
+  const longitude = document.getElementById("longitude");
+  const feedback = document.getElementById("map_feedback");
+  const clear = document.getElementById("clear_location");
+  let marker;
+  function setFields(position) {
+    latitude.value = position ? position.lat.toFixed(6) : "";
+    longitude.value = position ? position.wrap().lng.toFixed(6) : "";
+    for (const field of [latitude, longitude]) field.dispatchEvent(new Event("input", {bubbles: true}));
+  }
+  function refresh(recenter) {
+    const position = point(latitude.value, longitude.value);
+    clear.hidden = !latitude.value && !longitude.value;
+    if (position) {
+      if (!marker) {
+        marker = L.marker(position, {icon: icon("place"), draggable: true, title: "Выбранное место"}).addTo(map);
+        marker.on("dragend", () => { setFields(marker.getLatLng()); refresh(false); });
+      }
+      marker.setLatLng(position);
+      if (recenter) map.setView(position, 16);
+      feedback.textContent = "Место выбрано. Чтобы уточнить его, перетащите метку или нажмите на другое место.";
+    } else {
+      if (marker) marker.remove();
+      marker = null;
+      feedback.textContent = clear.hidden ? "Место ещё не отмечено." : "Проверьте широту и долготу.";
+    }
+  }
+  map.on("click", event => { setFields(event.latlng); refresh(false); });
+  for (const field of [latitude, longitude]) field.addEventListener("change", () => refresh(true));
+  clear.addEventListener("click", () => { setFields(null); refresh(false); map.getContainer().focus(); });
+  refresh(true);
 })();

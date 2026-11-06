@@ -789,6 +789,7 @@ def report_map():
     total = get_db().execute(f"SELECT COUNT(*) AS n FROM report r {coordinate_where}", params).fetchone()["n"]
     rows = get_db().execute(f"{SELECT_REPORT} {coordinate_where} ORDER BY r.id DESC LIMIT 500", params).fetchall()
     pins = [dict(id=r["ID"], title=r["Title"], location=r["Location"], status=r["Status"],
+                 status_key=STATUSES.get(r["Status"], "pending"),
                  latitude=r["latitude"], longitude=r["longitude"], url=url_for("report_detail", report_id=r["ID"])) for r in rows]
     return render_template("map.html", q=q, category=category, status=status, pins=pins, total=total, map_enabled=True)
 

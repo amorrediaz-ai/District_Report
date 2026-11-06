@@ -683,3 +683,34 @@ main { max-width: 1100px; margin: 0 auto; }
     .coordinate_fields { grid-template-columns: 1fr; }
     .header { justify-content: center; }
 }
+
+/* Обозначения статуса совпадают в легенде и на метках. */
+.map-tools, .map-key, .map-key li { display: flex; align-items: center; gap: 10px; }
+.map-tools { flex-wrap: wrap; justify-content: space-between; margin: 14px 0 8px; }
+.map-tools p { margin: 0; }
+.map-reset, .manual-coordinates summary { min-height: 44px; padding: 10px 12px; cursor: pointer; font: inherit; }
+.map-reset { border: 1px solid #bdc8b9; border-radius: 8px; color: #294832; background: #fafbf6; }
+.map-key { list-style: none; padding: 0; flex-wrap: wrap; gap: 8px 20px; margin: 12px 0; }
+.map-key li { gap: 6px; font-size: 14px; }
+.pin-face { display: grid; place-items: center; background: #344638; color: white; border-radius: 50%; font: bold 16px/1 system-ui, sans-serif; }
+.pin-pending { background: #815716; }
+.pin-pending::before { content: "…"; }
+.pin-in_progress { background: #195f87; }
+.pin-in_progress::before { content: "↻"; }
+.pin-resolved { background: #267046; }
+.pin-resolved::before { content: "✓"; }
+.pin-rejected { background: #9c3e36; }
+.pin-rejected::before { content: "×"; }
+.pin-place::before { content: "●"; }
+.map-key .pin-face { width: 22px; height: 22px; }
+.report-pin { display: grid; justify-items: center; align-content: start; }
+.report-pin .pin-face { position: relative; z-index: 1; min-width: 30px; height: 30px; padding: 0 3px; border: 2px solid white; box-shadow: 0 1px 5px #142b2180; }
+.report-pin::after { content: ""; width: 8px; height: 8px; margin-top: -4px; transform: rotate(45deg); background: white; box-shadow: 1px 1px 2px #142b2166; }
+.map-popup article + article { margin-top: 10px; border-top: 1px solid #d2dacc; padding-top: 10px; }
+.map-popup article { overflow-wrap: anywhere; line-height: 1.45; }
+.map-popup a { font-weight: 700; font-size: 15px; }
+.leaflet-popup-content .map-popup p { margin: 4px 0; }
+.manual-coordinates { margin-top: 8px; }
+.manual-coordinates summary { color: #294832; }
+.map-warning { color: #744411; }
+.district_map:focus-visible, .report-pin:focus-visible { outline: 3px solid #194c79; outline-offset: -2px; }
