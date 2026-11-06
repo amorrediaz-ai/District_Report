@@ -45,6 +45,7 @@
     <section class="history_panel">
         <h2>Место обращения</h2>
         <div id="location_map" class="district_map" data-mode="detail" data-latitude="{{ report.latitude }}" data-longitude="{{ report.longitude }}" aria-label="Место обращения на карте"></div>
+        <p id="map_warning" class="map-warning" role="status" hidden></p>
         <p id="map_feedback" class="history_hint" role="status">Координаты: {{ report.latitude }}, {{ report.longitude }}</p>
     </section>
     {% endif %}

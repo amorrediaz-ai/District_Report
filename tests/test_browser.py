@@ -15,7 +15,7 @@ from test_postgresql import module, clean, citizen_client, admin_client, post, P
 
 @pytest.mark.parametrize('viewport', [{'width': 1365, 'height': 900}, {'width': 390, 'height': 844}], ids=['desktop', 'mobile'])
 def test_map_gallery_and_notifications_in_browser(module, viewport):
-    citizen_client(module)
+    owner = citizen_client(module)
     admin = admin_client(module)
     server = make_server('127.0.0.1', 0, module.app, threaded=True)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -48,7 +48,16 @@ def test_map_gallery_and_notifications_in_browser(module, viewport):
             map_element = page.locator('#location_map.leaflet-container')
             expect(map_element).to_be_visible()
             map_element.click(position={'x': 110, 'y': 130})
-            assert page.locator('#latitude').input_value()
+            selected = {key: page.locator('#' + key).input_value() for key in ('latitude', 'longitude')}
+            assert all(selected.values())
+            expect(page.locator('#map_feedback')).to_contain_text('Место выбрано')
+            page.get_by_role('button', name='Убрать метку').click()
+            expect(page.locator('#latitude')).to_have_value('')
+            page.get_by_text('Ввести координаты вручную', exact=True).click()
+            for field, value in selected.items():
+                page.locator('#' + field).fill(value)
+            page.locator('#longitude').press('Tab')
+            expect(page.locator('.report-pin')).to_have_count(1)
             page.locator('#photo_input').set_input_files([
                 {'name': f'photo{i}.png', 'mimeType': 'image/png', 'buffer': PNG} for i in range(3)])
             expect(page.locator('#photo_preview img')).to_have_count(3)
@@ -75,6 +84,19 @@ def test_map_gallery_and_notifications_in_browser(module, viewport):
             expect(page.locator('#location_map .leaflet-interactive')).to_have_count(1)
             page.locator('#location_map .leaflet-interactive').click()
             expect(page.locator('.leaflet-popup-content')).to_contain_text('Тест карты и галереи')
+            response = post(owner, '/report/new', title='Второе обращение на том же месте',
+                            description='Вторая проблема у той же дорожки.', category='Освещение',
+                            location='Астана, пешеходная дорожка', **selected)
+            assert response.status_code == 302
+            page.reload()
+            group = page.get_by_role('button', name='Обращений в этой точке: 2')
+            expect(group).to_have_text('2')
+            group.focus()
+            page.keyboard.press('Enter')
+            expect(page.locator('.map-popup a')).to_have_count(2)
+            expect(page.locator('.map-popup')).to_contain_text('Второе обращение')
+            page.get_by_role('button', name='Вернуть исходный вид').click()
+            expect(page.locator('.map-popup')).to_have_count(0)
             assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
             assert errors == []
             context.close()

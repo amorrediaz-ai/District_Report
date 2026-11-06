@@ -44,14 +44,18 @@
 
         <fieldset class="map_field">
             <legend>Место на карте <span class="optional">(необязательно)</span></legend>
-            <p>Нажмите на место проблемы. Метка будет видна всем. Адрес выше нужно заполнить отдельно.</p>
+            <p>Приблизьте улицу и нажмите на точное место. Метку увидят другие жители. Адрес укажите в поле выше.</p>
             <div id="location_map" class="district_map" data-mode="edit" aria-label="Выбор места обращения на карте"></div>
-            <p id="map_feedback" class="history_hint" role="status">Можно выбрать место на карте или ввести координаты ниже.</p>
-            <div class="coordinate_fields">
+            <p id="map_feedback" class="history_hint" role="status">Место можно отметить на карте или указать координатами.</p>
+            <p id="map_warning" class="map-warning" role="status" hidden></p>
+            <button type="button" class="map-reset" id="clear_location" hidden>Убрать метку</button>
+            <details class="manual-coordinates"{% if errors.coordinates %} open{% endif %}>
+                <summary>Ввести координаты вручную</summary>
+                <div class="coordinate_fields">
                 <label class="field"><span>Широта</span><input id="latitude" name="latitude" type="number" step="any" min="-90" max="90" value="{{ form.latitude }}" placeholder="51.1282"></label>
                 <label class="field"><span>Долгота</span><input id="longitude" name="longitude" type="number" step="any" min="-180" max="180" value="{{ form.longitude }}" placeholder="71.4304"></label>
-            </div>
-            <button type="button" class="link_button" id="clear_location" hidden>Убрать метку</button>
+                </div>
+            </details>
             {% if errors.coordinates %}<small class="error">{{ errors.coordinates }}</small>{% endif %}
             <noscript><p>Введите координаты вручную или оставьте оба поля пустыми.</p></noscript>
         </fieldset>

@@ -667,7 +667,7 @@ def test_coordinates_validation_edit_and_map_filters(module):
     assert post(owner, f'/report/{rid}/edit', **edited_data(revision='1', latitude='', longitude='')).status_code == 302
     with module.connect_db() as db:
         assert db.execute('SELECT latitude, longitude FROM report WHERE id=%s', (rid,)).fetchone() == {'latitude': None, 'longitude': None}
-    assert 'На карте: 0 из 0' in owner.get('/map').get_data(as_text=True)
+    assert 'Пока нет обращений с отметкой на карте.' in owner.get('/map').get_data(as_text=True)
 
 
 def test_notifications_private_read_state_and_cascade(module):
