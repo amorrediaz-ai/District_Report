@@ -3,6 +3,22 @@
 
   var csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || "";
 
+  const headerMenu = document.querySelector(".site-menu");
+  if (headerMenu) {
+    document.addEventListener("click", function (event) {
+      if (!headerMenu.contains(event.target)) headerMenu.open = false;
+    });
+    headerMenu.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && headerMenu.open) {
+        headerMenu.open = false;
+        headerMenu.querySelector("summary").focus();
+      }
+    });
+    headerMenu.addEventListener("focusout", function (event) {
+      if (event.relatedTarget && !headerMenu.contains(event.relatedTarget)) headerMenu.open = false;
+    });
+  }
+
   /* Счётчики и предупреждение о несохранённых изменениях формы. */
   var editor = document.getElementById("report_editor");
   if (editor) {
